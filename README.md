@@ -8,7 +8,11 @@
 
 ---
 
-When Anthropic shipped Claude Code on npm, the `.js.map` source maps contained a `sourcesContent` field with the full original TypeScript — nearly two thousand files comprising the complete architecture of a production AI agent used by hundreds of thousands of developers. This book is the result of reading every one of those files.
+> **This repository is purely educational.** It contains no source code from Claude Code — not a single line. Every code block is original pseudocode written to illustrate architectural patterns. The goal is to help engineers understand how production AI agents are built, not to reproduce or redistribute proprietary software.
+
+---
+
+When Anthropic shipped Claude Code on npm, the `.js.map` source maps contained a `sourcesContent` field with the full original TypeScript. This book is the result of studying that architecture and distilling the patterns, trade-offs, and design decisions into a technical narrative that any engineer can learn from.
 
 **18 chapters across 7 parts.** ~400 pages in print equivalent.
 
@@ -118,6 +122,8 @@ The entire process — from source extraction to final revised book — took app
 
 ---
 
-## License
+## Disclaimer
 
-This is an independent analysis of publicly accessible source code. Claude Code is a product of Anthropic. This book is not affiliated with, endorsed by, or sponsored by Anthropic.
+**This repository does not contain any source code from Claude Code.** All code blocks are original pseudocode using different variable names, written to illustrate architectural patterns. No proprietary prompt text, internal constants, or exact function implementations are included. This project exists purely for educational purposes — to help engineers understand the design patterns behind production AI coding agents.
+
+This is an independent analysis. Claude Code is a product of Anthropic. This book is not affiliated with, endorsed by, or sponsored by Anthropic.

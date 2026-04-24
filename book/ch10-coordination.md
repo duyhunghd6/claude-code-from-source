@@ -1,6 +1,6 @@
 # Chương 10: Tasks, Coordination, and Swarms
 
-## The Limits of a Single Thread (Giới hạn của một luồng đơn)
+## Giới hạn của một luồng đơn
 
 Chương 8 đã chỉ ra cách tạo sub-agent -- vòng đời mười lăm bước xây một ngữ cảnh thực thi cô lập từ một agent definition. Chương 9 đã chỉ ra cách biến việc spawn song song thành bài toán kinh tế nhờ prompt cache exploitation mechanism. Nhưng tạo agent và quản lý agent là hai bài toán khác nhau. Chương này xử lý bài toán thứ hai.
 

@@ -223,7 +223,7 @@ const agentReadFileState = forkContextMessages !== undefined
   : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
 ```
 
-Với fork agent, toàn bộ conversation history của parent được clone vào `contextMessages`. Nhưng có một filter tối quan trọng: `filterIncompleteToolCalls()` loại mọi block `tool_use` chưa có block `tool_result` khớp. Không có filter này, API sẽ từ chối cuộc hội thoại lỗi cấu trúc. Tình huống đó xảy ra khi parent đang giữa lúc chạy tool tại thời điểm fork -- `tool_use` đã phát ra nhưng kết quả chưa về.
+Với fork agent, toàn bộ conversation history của parent được clone vào `contextMessages`. Nhưng có một filter tối quan trọng: `filterIncompleteToolCalls()` loại mọi block `tool_use` chưa có block `tool_result` khớp. Không có filter này, API sẽ từ chối cuộc hội thoại lỗi cấu trúc. Tình huống đó xảy ra khi parent đang giữa lúc chạy tool tại thời điểm fork -- tool_use đã phát ra nhưng kết quả chưa về.
 
 File state cache đi theo đúng mẫu fork-or-fresh. Fork child nhận bản clone cache của parent (chúng đã "biết" file nào đã đọc). Fresh agent bắt đầu rỗng. Bản clone là shallow copy -- chuỗi nội dung file được chia sẻ theo reference, không nhân đôi. Điều này quan trọng với memory: một fork child với cache 50 file không nhân đôi 50 nội dung file, nó nhân đôi 50 con trỏ. Hành vi LRU eviction vẫn độc lập -- mỗi cache tự evict theo access pattern của chính nó.
 

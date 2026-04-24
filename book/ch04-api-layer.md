@@ -1,10 +1,10 @@
-# Chapter 4: Talking to Claude -- The API Layer
+# Chương 4: Trao đổi với Claude -- API layer
 
-Chapter 3 established where state lives and how the two tiers communicate. Now we follow what happens when that state is put to use: the system needs to talk to a language model. Everything in Claude Code -- the bootstrap sequence, the state system, the permission framework -- exists to serve this moment.
+Chương 3 đã xác lập trạng thái nằm ở đâu và hai tầng giao tiếp với nhau như thế nào. Bây giờ, ta theo dõi điều xảy ra khi trạng thái đó được đưa vào sử dụng: hệ thống cần trao đổi với một mô hình ngôn ngữ. Mọi thứ trong Claude Code -- chuỗi bootstrap, hệ thống trạng thái, framework phân quyền -- đều tồn tại để phục vụ khoảnh khắc này.
 
-This layer handles more failure modes than any other part of the system. It must route through four cloud providers via a single transparent interface. It must construct system prompts with byte-level awareness of how the server's prompt cache works, because a single misplaced section can bust a cache worth 50,000+ tokens. It must stream responses with active failure detection, because TCP connections die silently. And it must maintain session-stable invariants so that mid-conversation changes to feature flags do not cause invisible performance cliffs.
+Lớp này xử lý nhiều failure mode hơn bất kỳ phần nào khác của hệ thống. Nó phải định tuyến qua bốn cloud provider bằng một giao diện thống nhất và trong suốt. Nó phải xây dựng system prompt với độ chính xác cấp byte theo cách prompt cache phía server hoạt động, vì chỉ một section đặt sai vị trí có thể làm vỡ một cache trị giá hơn 50.000 token. Nó phải stream phản hồi kèm phát hiện lỗi chủ động, vì kết nối TCP có thể chết lặng lẽ. Và nó phải giữ các bất biến ổn định theo phiên để thay đổi feature flag giữa chừng không tạo ra những vách hiệu năng vô hình.
 
-Let us trace a single API call from start to finish.
+Hãy đi theo một API call từ đầu đến cuối.
 
 ```mermaid
 sequenceDiagram
@@ -42,9 +42,9 @@ sequenceDiagram
 
 ---
 
-## The Multi-Provider Client Factory
+## Multi-Provider Client Factory
 
-The `getAnthropicClient()` function is the single factory for all model communication. It returns an Anthropic SDK client configured for whichever provider the deployment targets:
+Hàm `getAnthropicClient()` là factory duy nhất cho mọi giao tiếp với model. Nó trả về một Anthropic SDK client được cấu hình cho provider mà môi trường triển khai đang nhắm tới:
 
 ```mermaid
 graph LR
@@ -56,25 +56,25 @@ graph LR
     SDK --> CL["callModel()"]
 ```
 
-The dispatch is entirely environment-variable driven, evaluated in a fixed priority order. All four provider-specific SDK classes are cast to `Anthropic` via `as unknown as Anthropic`. The comment in the source is refreshingly honest: "we have always been lying about the return type." This deliberate type erasure means every consumer sees a uniform interface. The rest of the codebase never branches on provider.
+Cơ chế dispatch được điều khiển hoàn toàn bằng biến môi trường, theo thứ tự ưu tiên cố định. Cả bốn lớp SDK theo từng provider đều được ép kiểu về `Anthropic` qua `as unknown as Anthropic`. Bình luận trong mã nguồn nói rất thẳng: "we have always been lying about the return type." Việc type erasure có chủ đích này khiến mọi nơi sử dụng đều nhìn thấy cùng một giao diện. Phần còn lại của codebase không cần rẽ nhánh theo provider.
 
-Each provider SDK is dynamically imported -- `AnthropicBedrock`, `AnthropicFoundry`, `AnthropicVertex` are heavy modules with their own dependency trees. The dynamic import ensures unused providers never load.
+Mỗi SDK theo provider được dynamic import -- `AnthropicBedrock`, `AnthropicFoundry`, `AnthropicVertex` là các module nặng với cây phụ thuộc riêng. Dynamic import đảm bảo provider không dùng sẽ không bị nạp.
 
-Provider selection is determined at startup and stored in bootstrap `STATE`. The query loop never checks which provider is active. Switching from Direct API to Bedrock is a configuration change, not a code change.
+Provider được chọn ngay lúc startup và lưu trong bootstrap `STATE`. Query loop không cần kiểm tra provider nào đang hoạt động. Chuyển từ Direct API sang Bedrock là thay đổi cấu hình, không phải thay đổi mã.
 
 ### The buildFetch Wrapper
 
-Every outbound fetch gets wrapped to inject an `x-client-request-id` header -- a UUID generated per request. When a request times out, the server never assigns a request ID to the response. Without the client-side ID, the API team cannot correlate the timeout with server-side logs. This header bridges that gap. It is only sent to first-party Anthropic endpoints -- third-party providers might reject unknown headers.
+Mọi outbound fetch đều được bọc để chèn header `x-client-request-id` -- một UUID tạo mới cho từng request. Khi request bị timeout, server không bao giờ gán request ID vào phản hồi. Nếu không có ID phía client, đội API không thể đối chiếu timeout đó với log phía server. Header này lấp đúng khoảng trống đó. Nó chỉ được gửi tới endpoint first-party của Anthropic -- provider bên thứ ba có thể từ chối header lạ.
 
 ---
 
-## System Prompt Construction
+## Xây dựng System Prompt
 
-The system prompt is the most cache-sensitive artifact in the entire system. Claude's API provides server-side prompt caching: identical prompt prefixes across requests can be cached, saving both latency and cost. A 200K-token conversation might have 50-70K tokens that are identical to the previous turn. Busting that cache forces the server to re-process all of it.
+System prompt là artifact nhạy với cache nhất trong toàn hệ thống. API của Claude hỗ trợ server-side prompt caching: các tiền tố prompt giống hệt nhau giữa các request có thể được cache, giúp giảm cả độ trễ lẫn chi phí. Một cuộc hội thoại 200K token có thể có 50-70K token giống với lượt trước. Làm vỡ cache đó buộc server xử lý lại toàn bộ.
 
 ### The Dynamic Boundary Marker
 
-The prompt is built as an array of string sections with a critical dividing line:
+Prompt được xây thành một mảng các section chuỗi, với một đường ranh giới tối quan trọng:
 
 ```mermaid
 flowchart TD
@@ -108,19 +108,19 @@ flowchart TD
     style Dynamic fill:#ddf,stroke:#333
 ```
 
-Everything before the boundary is identical across sessions, users, and organizations -- it gets the highest tier of server-side caching. Everything after contains user-specific content and drops to per-session caching.
+Mọi thứ trước boundary là giống nhau giữa các session, người dùng và tổ chức -- chúng nhận tầng cache cao nhất phía server. Mọi thứ sau boundary chứa nội dung đặc thù theo người dùng và hạ xuống cache theo từng session.
 
-The naming convention for sections is deliberately loud. Adding a new section requires choosing between `systemPromptSection` (safe, cached) and `DANGEROUS_uncachedSystemPromptSection` (cache-breaking, requires a reason string). The `_reason` parameter is unused at runtime but serves as mandatory documentation -- every cache-breaking section carries its justification in the source code.
+Quy ước đặt tên section được làm "ồn" có chủ ý. Khi thêm section mới, bạn buộc phải chọn giữa `systemPromptSection` (an toàn, có cache) và `DANGEROUS_uncachedSystemPromptSection` (làm vỡ cache, bắt buộc có lý do). Tham số `_reason` không dùng ở runtime nhưng đóng vai trò tài liệu bắt buộc -- mỗi section phá cache đều mang theo phần biện minh ngay trong mã nguồn.
 
 ### The 2^N Problem
 
-A comment in `prompts.ts` explains why conditional sections must go after the boundary:
+Một bình luận trong `prompts.ts` giải thích vì sao section có điều kiện phải nằm sau boundary:
 
 > Each conditional here is a runtime bit that would otherwise multiply the Blake2b prefix hash variants (2^N).
 
-Every boolean condition before the boundary doubles the number of unique global cache entries. Three conditionals create 8 variants; five create 32. The static sections are deliberately unconditional. Compile-time feature flags (resolved by the bundler) are acceptable before the boundary. Runtime checks (is this Haiku? does the user have auto mode?) must go after.
+Mỗi điều kiện boolean trước boundary sẽ nhân đôi số biến thể cache toàn cục. Ba điều kiện thành 8 biến thể; năm điều kiện thành 32. Các section tĩnh vì thế được giữ cố định, không điều kiện. Compile-time feature flag (được bundler resolve) có thể đặt trước boundary. Runtime check (có phải Haiku không? người dùng có auto mode không?) phải đặt sau.
 
-This is the kind of constraint that is invisible until you violate it. A well-intentioned engineer adding a user-setting-gated section before the boundary could silently fragment the global cache and double the fleet's prompt processing costs.
+Đây là kiểu ràng buộc vô hình cho tới khi bị vi phạm. Một kỹ sư có ý tốt thêm section phụ thuộc setting người dùng trước boundary có thể âm thầm phân mảnh global cache và làm chi phí xử lý prompt của cả fleet tăng gấp đôi.
 
 ---
 
@@ -128,19 +128,19 @@ This is the kind of constraint that is invisible until you violate it. A well-in
 
 ### Raw SSE Over SDK Abstractions
 
-The streaming implementation uses the raw `Stream<BetaRawMessageStreamEvent>` rather than the SDK's higher-level `BetaMessageStream`. The reason: `BetaMessageStream` calls `partialParse()` on every `input_json_delta` event. For tool calls with large JSON inputs (file edits with hundreds of lines), this re-parses the growing JSON string from scratch on every chunk -- O(n^2) behavior. Claude Code handles tool input accumulation itself, so the partial parsing is pure waste.
+Phần streaming dùng `Stream<BetaRawMessageStreamEvent>` thô thay vì `BetaMessageStream` cấp cao của SDK. Lý do: `BetaMessageStream` gọi `partialParse()` ở mọi event `input_json_delta`. Với tool call có JSON input lớn (ví dụ chỉnh file hàng trăm dòng), nó parse lại chuỗi JSON đang lớn dần từ đầu ở từng chunk -- hành vi O(n^2). Claude Code tự tích lũy input của tool, nên parse từng phần ở đây là lãng phí thuần túy.
 
 ### The Idle Watchdog
 
-TCP connections can die without notification. The server may crash, a load balancer may silently drop the connection, or a corporate proxy may time out. The SDK's request timeout only covers the initial fetch -- once HTTP 200 arrives, the timeout is satisfied. If the streaming body stops, nothing catches it.
+Kết nối TCP có thể chết mà không phát tín hiệu. Server có thể crash, load balancer có thể im lặng cắt kết nối, hoặc proxy doanh nghiệp có thể timeout. Request timeout của SDK chỉ bao phủ fetch ban đầu -- khi HTTP 200 trả về thì timeout coi như đã thỏa. Nếu body streaming ngừng lại, không có gì bắt được.
 
-The watchdog: a `setTimeout` that resets on every received chunk. If no chunks arrive for 90 seconds, the stream is aborted and the system falls back to a non-streaming retry. A warning fires at the 45-second mark. When the watchdog fires, it logs the event with the client request ID for correlation.
+Watchdog là một `setTimeout` được reset ở mỗi chunk nhận được. Nếu không có chunk nào tới trong 90 giây, stream sẽ bị abort và hệ thống rơi về retry non-streaming. Một cảnh báo được phát ở mốc 45 giây. Khi watchdog kích hoạt, hệ thống ghi log kèm client request ID để đối chiếu.
 
 ### Non-Streaming Fallback
 
-When streaming fails mid-response (network error, stall, truncation), the system falls back to a synchronous `messages.create()` call. This handles proxy failures where the proxy returns HTTP 200 with a non-SSE body, or truncates the SSE stream partway through.
+Khi streaming lỗi giữa chừng (lỗi mạng, treo, cắt cụt), hệ thống fallback về lệnh gọi đồng bộ `messages.create()`. Cách này xử lý các lỗi proxy kiểu trả HTTP 200 nhưng body không phải SSE, hoặc cắt cụt luồng SSE giữa đường.
 
-The fallback can be disabled when streaming tool execution is active, since a fallback would re-execute the entire request and potentially run tools twice.
+Fallback có thể bị tắt khi streaming tool execution đang bật, vì fallback sẽ chạy lại toàn bộ request và có thể khiến tool chạy hai lần.
 
 ---
 
@@ -148,68 +148,68 @@ The fallback can be disabled when streaming tool execution is active, since a fa
 
 ### Three Tiers
 
-Prompt caching operates at three levels:
+Prompt caching vận hành trên ba tầng:
 
-**Ephemeral cache** (default): Per-session caching with a server-defined TTL (~5 minutes). All users get this.
+**Ephemeral cache** (mặc định): cache theo session với TTL do server quy định (~5 phút). Mọi người dùng đều có.
 
-**1-hour TTL**: Eligible users get extended caching. Eligibility is determined by subscription status and latched in bootstrap state -- the `promptCache1hEligible` sticky latch from Chapter 3 ensures a mid-session overage flip does not change the TTL.
+**1-hour TTL**: người dùng đủ điều kiện sẽ có cache kéo dài. Điều kiện được quyết định bởi trạng thái gói thuê bao và được chốt trong bootstrap state -- sticky latch `promptCache1hEligible` từ Chương 3 đảm bảo việc đổi trạng thái giữa phiên không làm đổi TTL.
 
-**Global scope**: System prompt cache entries get cross-session, cross-organization sharing. The static portions of the prompt are identical for all Claude Code users, so a single cached copy serves everyone. Global scope is disabled when MCP tools are present, because MCP tool definitions are user-specific and would fragment the cache into millions of unique prefixes.
+**Global scope**: cache của system prompt được chia sẻ xuyên session, xuyên tổ chức. Phần tĩnh của prompt giống nhau cho mọi người dùng Claude Code, nên một bản cache có thể phục vụ tất cả. Global scope bị tắt khi có MCP tool, vì định nghĩa MCP tool là đặc thù theo người dùng và sẽ phân mảnh cache thành hàng triệu tiền tố khác nhau.
 
 ### The Sticky Latches in Action
 
-The five sticky latches from Chapter 3 are evaluated here, during request construction. Each latch starts as `null` and, once set to `true`, remains `true` for the session. The comment above the latch block is precise: "Sticky-on latches for dynamic beta headers. Each header, once first sent, keeps being sent for the rest of the session so mid-session toggles don't change the server-side cache key and bust ~50-70K tokens."
+Năm sticky latch từ Chương 3 được đánh giá ngay tại đây, trong lúc dựng request. Mỗi latch bắt đầu bằng `null` và khi đã thành `true` thì giữ `true` suốt phiên. Bình luận phía trên khối latch rất chính xác: "Sticky-on latches for dynamic beta headers. Each header, once first sent, keeps being sent for the rest of the session so mid-session toggles don't change the server-side cache key and bust ~50-70K tokens."
 
-See Chapter 3, Section 3.1 for the full explanation of the latch pattern, the five specific latches, and why always-send-all-headers is not the right solution.
+Xem Chương 3, Mục 3.1 để có giải thích đầy đủ về latch pattern, năm latch cụ thể, và vì sao phương án gửi mọi header mọi lúc không phải lời giải đúng.
 
 ---
 
-## The queryModel Generator
+## The `queryModel()` Generator
 
-The `queryModel()` function is an async generator (~700 lines) that orchestrates the entire API call lifecycle. It yields `StreamEvent`, `AssistantMessage`, and `SystemAPIErrorMessage` objects.
+Hàm `queryModel()` là một async generator (~700 dòng) điều phối toàn bộ lifecycle của API call. Nó yield các đối tượng `StreamEvent`, `AssistantMessage`, và `SystemAPIErrorMessage`.
 
-The request assembly follows a carefully ordered sequence:
+Phần lắp ráp request đi theo một trình tự được sắp rất kỹ:
 
-1. **Kill switch check** -- safety valve for the most expensive model tier
-2. **Beta header assembly** -- model-specific, with sticky latches applied
-3. **Tool schema building** -- parallel via `Promise.all()`, deferred tools excluded until discovered
-4. **Message normalization** -- repair orphaned tool_use/tool_result mismatches, strip excess media, remove stale blocks
-5. **System prompt block construction** -- split at the dynamic boundary, assign cache scopes
-6. **Retry-wrapped streaming** -- handles 529 (overloaded), model fallback, thinking downgrade, OAuth refresh
+1. **Kill switch check** -- van an toàn cho tầng model đắt nhất
+2. **Beta header assembly** -- theo model cụ thể, có sticky latches
+3. **Tool schema building** -- chạy song song bằng `Promise.all()`, loại deferred tool cho tới khi được phát hiện
+4. **Message normalization** -- sửa lệch cặp tool_use/tool_result mồ côi, bỏ media dư thừa, loại block cũ
+5. **System prompt block construction** -- tách tại dynamic boundary, gán cache scope
+6. **Retry-wrapped streaming** -- xử lý 529 (overloaded), model fallback, thinking downgrade, OAuth refresh
 
 ### Output Token Cap
 
-The default output cap is 8,000 tokens, not the typical 32K or 64K. Production data showed that p99 output is 4,911 tokens -- standard limits over-reserve by 8-16x. When a response hits the cap (<1% of requests), it gets one clean retry at 64K. This saves significant cost at fleet scale.
+Mức trần output mặc định là 8.000 token, không phải 32K hay 64K thường thấy. Dữ liệu production cho thấy p99 output là 4.911 token -- giới hạn chuẩn đang dự trữ dư 8-16 lần. Khi phản hồi chạm trần (<1% request), hệ thống cho một lần retry sạch ở 64K. Ở quy mô fleet, khoản tiết kiệm rất đáng kể.
 
 ### Error Handling and Retry
 
-The `withRetry()` function is itself an async generator that yields `SystemAPIErrorMessage` events so the UI can display retry status. Retry strategies:
+Hàm `withRetry()` cũng là một async generator, yield các event `SystemAPIErrorMessage` để UI hiển thị trạng thái retry. Các chiến lược retry gồm:
 
-- **529 (overloaded)**: Wait and retry, optionally downgrading fast mode
-- **Model fallback**: Primary model fails, try a fallback (e.g., Opus to Sonnet)
-- **Thinking downgrade**: Context window overflow triggers reduced thinking budget
-- **OAuth 401**: Refresh token and retry once
+- **529 (overloaded)**: chờ rồi retry, có thể hạ fast mode
+- **Model fallback**: model chính thất bại thì thử model dự phòng (ví dụ Opus sang Sonnet)
+- **Thinking downgrade**: tràn context window sẽ giảm ngân sách thinking
+- **OAuth 401**: làm mới token và retry một lần
 
-The generator pattern means retry progress ("Server overloaded, retrying in 5s...") appears as a natural part of the event stream, not as a side-channel notification.
+Mẫu generator khiến tiến trình retry ("Server overloaded, retrying in 5s...") xuất hiện như một phần tự nhiên của event stream, thay vì thông báo side-channel.
 
 ---
 
 ## Apply This
 
-**Treat prompt caching as an architectural constraint, not a feature toggle.** Most LLM applications "turn on" caching. Claude Code treats it as a design constraint that shapes prompt ordering, section memoization, header latching, and configuration management. The difference between a well-structured prompt (cache hit on 50K tokens) and a poorly-structured one (full reprocessing every turn) is the single largest cost lever in the system.
+**Hãy coi prompt caching là ràng buộc kiến trúc, không phải một công tắc tính năng.** Nhiều ứng dụng LLM chỉ "bật" cache. Claude Code coi cache là ràng buộc thiết kế, định hình thứ tự prompt, section memoization, header latching, và quản lý cấu hình. Khác biệt giữa prompt tổ chức tốt (cache hit trên 50K token) và prompt tổ chức kém (xử lý lại toàn bộ mỗi lượt) là đòn bẩy chi phí lớn nhất của hệ thống.
 
-**Use the DANGEROUS naming convention for costly escape hatches.** When a codebase has an invariant that is easy to violate accidentally, naming the escape hatch with a loud prefix does three things: makes violations visible in code review, forces documentation (the required reason parameter), and creates psychological friction toward the safe default. This generalizes beyond caching to any operation with invisible cost.
+**Dùng quy ước đặt tên DANGEROUS cho các lối thoát đắt đỏ.** Khi codebase có một bất biến dễ bị phá vỡ do vô tình, đặt tên lối thoát bằng tiền tố thật "ồn" làm được ba việc: giúp vi phạm nổi bật trong code review, buộc phải có tài liệu (tham số lý do bắt buộc), và tạo ma sát tâm lý để nghiêng về mặc định an toàn. Mẫu này áp dụng vượt ra ngoài cache, cho mọi thao tác có chi phí vô hình.
 
-**Build streaming with a watchdog, not just a timeout.** The SDK's request timeout satisfies on HTTP 200, but the response body can stop arriving at any point. A `setTimeout` that resets on every chunk catches this. The non-streaming fallback handles proxy failure modes (HTTP 200 with non-SSE body, mid-stream truncation) that are more common than you expect in corporate environments.
+**Xây streaming với watchdog, không chỉ với timeout.** Request timeout của SDK coi như xong khi nhận HTTP 200, nhưng body phản hồi có thể ngừng ở bất kỳ lúc nào. Một `setTimeout` reset theo từng chunk sẽ bắt lỗi này. Fallback non-streaming xử lý các failure mode của proxy (HTTP 200 với body không phải SSE, cắt cụt giữa luồng) vốn phổ biến hơn bạn tưởng trong môi trường doanh nghiệp.
 
-**Make retry strategies yield-based, not exception-based.** By making the retry wrapper an async generator that yields status events, the caller displays retry progress as a natural part of the event stream. The model fallback pattern (Opus fails, try Sonnet) is particularly useful for production resilience.
+**Hãy thiết kế retry theo kiểu yield, không theo exception.** Khi wrapper retry là async generator có thể yield event trạng thái, phía gọi sẽ hiển thị tiến trình retry như phần tự nhiên của event stream. Mẫu model fallback (Opus lỗi, thử Sonnet) đặc biệt hữu ích cho độ bền production.
 
-**Separate the fast path from the full pipeline.** Not every API call needs tool search, advisor integration, thinking budgets, and streaming infrastructure. Claude Code's `queryHaiku()` function provides a streamlined path for internal operations (compaction, classification) that skips all agentic concerns. A separate function with a simplified interface prevents accidental complexity leakage.
+**Tách fast path khỏi full pipeline.** Không phải API call nào cũng cần tool search, tích hợp advisor, thinking budget, và hạ tầng streaming. Hàm `queryHaiku()` của Claude Code cung cấp đường đi rút gọn cho tác vụ nội bộ (compaction, classification), bỏ qua các mối quan tâm agentic. Một hàm riêng với giao diện đơn giản giúp ngăn rò rỉ độ phức tạp ngoài ý muốn.
 
 ---
 
 ## Looking Ahead
 
-The API layer sits at the foundation of everything that follows. Chapter 5 will show how the query loop uses the streaming response to drive tool execution -- including how tools begin executing before the model finishes its response. Chapter 6 will explain how the compaction system preserves cache efficiency when conversations approach the context limit. Chapter 7 will show how each agent thread gets its own message array and request chain.
+API layer là nền tảng cho mọi thứ theo sau. Chương 5 sẽ cho thấy query loop dùng phản hồi streaming để điều khiển tool execution -- bao gồm việc tool có thể bắt đầu chạy trước khi model hoàn tất phản hồi. Chương 6 sẽ giải thích hệ thống compaction giữ hiệu quả cache như thế nào khi hội thoại tiến gần giới hạn ngữ cảnh. Chương 7 sẽ cho thấy vì sao mỗi agent thread có mảng message và chuỗi request riêng.
 
-All of those systems inherit the constraints established here: cache stability as an architectural invariant, provider transparency through the client factory, and session-stable configuration through the latch system. The API layer does not just send requests -- it defines the rules by which every other system operates.
+Tất cả các hệ thống đó đều kế thừa các ràng buộc được thiết lập ở đây: ổn định cache như một bất biến kiến trúc, trong suốt provider thông qua client factory, và cấu hình ổn định theo phiên thông qua hệ latch. API layer không chỉ gửi request -- nó định nghĩa luật vận hành cho mọi hệ thống còn lại.

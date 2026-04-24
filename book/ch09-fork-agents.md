@@ -1,54 +1,54 @@
-# Chapter 9: Fork Agents and the Prompt Cache
+# Chương 9: Fork Agents và Prompt Cache
 
-## The Ninety-Five Percent Insight
+## The Ninety-Five Percent Insight (Nhận định 95 phần trăm)
 
-When a parent agent spawns five child agents in parallel, the overwhelming majority of each child's API request is identical. The system prompt is the same. The tool definitions are the same. The conversation history is the same. The assistant message that triggered the spawns is the same. The only thing that differs is the final directive: "you handle the database migration," "you write the tests," "you update the docs."
+Khi một parent agent spawn năm child agent song song, phần áp đảo trong API request của mỗi child là giống hệt nhau. System prompt giống nhau. Tool definitions giống nhau. Conversation history giống nhau. Assistant message đã kích hoạt việc spawn cũng giống nhau. Thứ duy nhất khác là chỉ thị cuối cùng: "bạn xử lý database migration," "bạn viết tests," "bạn cập nhật docs."
 
-On a typical fork with a warm conversation, the shared prefix might be 80,000 tokens. The per-child directive might be 200 tokens. That is 99.75% overlap. Anthropic's prompt cache gives a 90% discount on cached input tokens. If you can make those 80,000 tokens hit the cache for children 2 through 5, you just cut the input cost of those four requests by 90%. For the parent, this is the difference between spending $4 and spending $0.50 on the same parallel dispatch.
+Trong một fork điển hình với hội thoại đã ấm, shared prefix có thể là 80,000 tokens. Chỉ thị cho mỗi child có thể là 200 tokens. Tức là trùng lặp 99.75%. Prompt cache của Anthropic giảm 90% chi phí cho cached input tokens. Nếu bạn khiến 80,000 tokens đó cache hit cho child 2 đến 5, bạn vừa cắt 90% input cost của bốn request đó. Với parent, đây là khác biệt giữa chi $4 và chi $0.50 cho cùng một lần dispatch song song.
 
-The catch is that prompt caching is byte-exact. Not "similar enough." Not "semantically equivalent." The bytes must match, character for character, from the first byte of the system prompt through to the last byte before the per-child content diverges. One extra space, one reordered tool definition, one stale feature flag changing a system prompt fragment -- and the cache misses. The entire prefix is reprocessed at full price.
+Cái bẫy là prompt caching yêu cầu byte-exact. Không phải "na ná đủ dùng." Không phải "tương đương ngữ nghĩa." Từng byte phải khớp, ký tự nối ký tự, từ byte đầu tiên của system prompt đến byte cuối cùng trước điểm nội dung per-child bắt đầu khác nhau. Thừa một khoảng trắng, đảo thứ tự một tool definition, một feature flag cũ làm thay đổi một mảnh system prompt -- và cache miss. Toàn bộ prefix bị xử lý lại với giá đầy đủ.
 
-Fork agents are Claude Code's answer to this constraint. They are not just a convenience for "spawn a child with context" -- they are a prompt cache exploitation mechanism disguised as an orchestration feature. Every design decision in the fork system traces back to one question: how do we guarantee byte-identical prefixes across parallel children?
-
----
-
-## What a Fork Child Inherits
-
-A fork agent inherits four things from its parent, and it inherits them by reference or byte-exact copy, not by recomputation.
-
-**1. The system prompt.** Not regenerated -- threaded. The parent's already-rendered system prompt bytes are passed via `override.systemPrompt`, pulled from `toolUseContext.renderedSystemPrompt`. This is the exact string that was sent in the parent's most recent API call.
-
-**2. The tool definitions.** The fork agent definition declares `tools: ['*']`, but with the `useExactTools` flag set to true, the child receives the parent's assembled tool array directly. No filtering, no reordering, no re-serialization.
-
-**3. The conversation history.** Every message the parent has exchanged with the API -- user turns, assistant turns, tool calls, tool results -- is cloned into the child's context via `forkContextMessages`.
-
-**4. The thinking configuration and model.** The fork definition specifies `model: 'inherit'`, which resolves to the parent's exact model. Same model means same tokenizer, same context window, same cache namespace.
-
-The fork agent definition itself is minimal -- almost a no-op:
-
-The fork agent definition is deliberately minimal -- it inherits everything from the parent. It specifies all tools (`'*'`), inherits the parent's model, uses bubble mode for permissions (so prompts surface in the parent's terminal), and provides a no-op system prompt function that is never actually called -- the real prompt arrives via the override channel, already rendered and byte-stable.
+Fork agents là câu trả lời của Claude Code cho ràng buộc này. Chúng không chỉ là tiện ích để "spawn child với context" -- chúng là prompt cache exploitation mechanism được ngụy trang thành tính năng orchestration. Mọi quyết định thiết kế trong hệ thống fork đều truy về một câu hỏi: làm sao đảm bảo byte-identical prefixes giữa các child chạy song song?
 
 ---
 
-## The Byte-Identical Prefix Trick
+## What a Fork Child Inherits (Fork child thừa hưởng gì)
 
-The API request to Claude has a specific structure: system prompt, then tools, then messages. For the prompt cache to hit, every byte from the start of the request through to some prefix boundary must be identical across requests.
+Một fork agent thừa hưởng bốn thứ từ parent, và nó thừa hưởng theo reference hoặc bản sao byte-exact, không phải bằng cách tính lại.
 
-Fork agents achieve this by ensuring three layers are frozen:
+**1. The system prompt.** Không regenerate -- mà thread qua. Các byte system prompt đã render của parent được truyền qua `override.systemPrompt`, lấy từ `toolUseContext.renderedSystemPrompt`. Đây chính là chuỗi đã được gửi trong API call gần nhất của parent.
+
+**2. The tool definitions.** Fork agent definition khai báo `tools: ['*']`, nhưng với cờ `useExactTools` đặt true, child nhận trực tiếp mảng tool đã assemble của parent. Không filter, không reorder, không re-serialize.
+
+**3. The conversation history.** Mọi message parent đã trao đổi với API -- user turns, assistant turns, tool calls, tool results -- được clone vào context của child qua `forkContextMessages`.
+
+**4. The thinking configuration and model.** Fork definition chỉ định `model: 'inherit'`, tức resolve về đúng model của parent. Cùng model nghĩa là cùng tokenizer, cùng context window, cùng cache namespace.
+
+Bản thân fork agent definition là tối giản -- gần như no-op:
+
+Fork agent definition được cố ý giữ tối giản -- nó kế thừa mọi thứ từ parent. Nó chỉ định toàn bộ tools (`'*'`), kế thừa model của parent, dùng bubble mode cho permissions (để prompt hiển thị ở terminal của parent), và cung cấp một hàm system prompt no-op không bao giờ thực sự được gọi -- prompt thật đi qua override channel, đã render sẵn và byte-stable.
+
+---
+
+## The Byte-Identical Prefix Trick (Mẹo tiền tố giống byte)
+
+API request gửi tới Claude có cấu trúc cụ thể: system prompt, rồi tools, rồi messages. Để prompt cache hit, mọi byte từ đầu request đến một prefix boundary nào đó phải giống hệt nhau giữa các request.
+
+Fork agents đạt điều này bằng cách đóng băng ba lớp:
 
 **Layer 1: System prompt via threading, not recomputation.**
 
-When the parent agent's system prompt was rendered for its last API call, the result was captured in `toolUseContext.renderedSystemPrompt`. This is the string after all dynamic interpolation -- GrowthBook feature flags, environment details, MCP server descriptions, skill content, CLAUDE.md files. The fork child receives this exact string.
+Khi system prompt của parent agent được render cho API call gần nhất, kết quả được giữ trong `toolUseContext.renderedSystemPrompt`. Đây là chuỗi sau mọi dynamic interpolation -- GrowthBook feature flags, chi tiết environment, mô tả MCP server, nội dung skill, file CLAUDE.md. Fork child nhận đúng chuỗi này.
 
-Why not just call `getSystemPrompt()` again? Because system prompt generation is not pure. GrowthBook flags transition from cold to warm state as the SDK fetches remote config. A flag that returned `false` during the parent's first turn might return `true` by the time the fork child spins up. If the system prompt includes a conditional block gated by that flag, the re-rendered prompt diverges by even a single character. Cache busted. Full-price reprocessing of 80,000 tokens, times five children.
+Tại sao không gọi lại `getSystemPrompt()`? Vì việc tạo system prompt không thuần (pure). GrowthBook flags chuyển từ trạng thái cold sang warm khi SDK fetch remote config. Một flag trả `false` ở lượt đầu của parent có thể trả `true` khi fork child khởi chạy. Nếu system prompt có khối điều kiện bị chặn bởi flag đó, prompt render lại sẽ lệch dù chỉ một ký tự. Cache hỏng. Xử lý lại đủ giá 80,000 tokens, nhân năm child.
 
-Threading the rendered bytes eliminates this entire class of divergence.
+Thread các byte đã render loại bỏ cả lớp sai lệch này.
 
 **Layer 2: Tool definitions via exact passthrough.**
 
-Normal sub-agents go through `resolveAgentTools()`, which filters the tool pool based on the agent definition's `tools` and `disallowedTools` arrays, applies permission mode differences, and potentially reorders tools. The resulting serialized tool array would differ from the parent's -- different subset, different order, different permission annotations.
+Sub-agent thông thường đi qua `resolveAgentTools()`, nơi tool pool bị filter theo mảng `tools` và `disallowedTools` trong agent definition, áp khác biệt permission mode, và có thể reorder tools. Mảng tool serialized kết quả sẽ khác parent -- khác tập con, khác thứ tự, khác annotation quyền.
 
-Fork agents skip this entirely:
+Fork agents bỏ qua toàn bộ bước đó:
 
 ```typescript
 const resolvedTools = useExactTools
@@ -56,18 +56,18 @@ const resolvedTools = useExactTools
   : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 ```
 
-The `useExactTools` flag is set to true only on the fork path. The child gets the parent's tool pool as-is. Same tools, same order, same serialization. This includes keeping the Agent tool itself in the child's pool, even though the child is forbidden from using it -- removing it would change the tool array and bust the cache.
+Cờ `useExactTools` chỉ được đặt true trên đường fork. Child nhận nguyên tool pool của parent. Cùng tools, cùng thứ tự, cùng serialization. Điều này bao gồm cả việc giữ Agent tool trong pool của child, dù child bị cấm dùng -- bỏ nó đi sẽ đổi mảng tool và làm cache miss.
 
 **Layer 3: Message array construction.**
 
-This is where `buildForkedMessages()` does its careful work. The function constructs the final two messages that sit between the shared history and the per-child directive:
+Đây là nơi `buildForkedMessages()` làm việc cẩn thận. Hàm này dựng hai message cuối nằm giữa shared history và per-child directive:
 
-The `buildForkedMessages()` function constructs the final two messages that sit between the shared history and the per-child directive. The algorithm:
+Hàm `buildForkedMessages()` dựng hai message cuối nằm giữa shared history và per-child directive. Thuật toán:
 
-1. Clone the parent's assistant message (preserving all `tool_use` blocks with their original IDs).
-2. For each `tool_use` block, create a `tool_result` with a constant placeholder string (identical across all children).
-3. Build a single user message containing all the placeholder results followed by the per-child directive wrapped in the boilerplate tag.
-4. Return `[clonedAssistantMessage, userMessageWithPlaceholdersAndDirective]`.
+1. Clone assistant message của parent (giữ nguyên tất cả khối `tool_use` với ID gốc).
+2. Với mỗi khối `tool_use`, tạo `tool_result` bằng chuỗi placeholder hằng số (giống hệt giữa mọi child).
+3. Dựng một user message duy nhất chứa toàn bộ placeholder results, rồi đến per-child directive được bọc trong boilerplate tag.
+4. Trả về `[clonedAssistantMessage, userMessageWithPlaceholdersAndDirective]`.
 
 ```typescript
 // Pseudocode — illustrates the message construction
@@ -81,42 +81,42 @@ function buildChildMessages(directive, parentAssistant) {
 }
 ```
 
-The resulting message array for each child looks like:
+Mảng message kết quả cho mỗi child trông như sau:
 
 ```
 [...shared_history, assistant(all_tool_uses), user(placeholder_results..., directive)]
 ```
 
-Every element before the directive is identical across children. The `FORK_PLACEHOLDER_RESULT` -- a constant string `'Fork started -- processing in background'` -- ensures even the tool result blocks are byte-identical. The `tool_use_id` values are identical because they reference the same assistant message. Only the final text block, containing the per-child directive, varies.
+Mọi phần tử trước directive đều giống nhau giữa các child. `FORK_PLACEHOLDER_RESULT` -- chuỗi hằng `'Fork started -- processing in background'` -- đảm bảo ngay cả các khối tool result cũng byte-identical. Giá trị `tool_use_id` giống nhau vì chúng tham chiếu cùng assistant message. Chỉ khối văn bản cuối, chứa chỉ thị per-child, là thay đổi.
 
-The cache boundary falls right before that final text block. Everything above it -- potentially tens of thousands of tokens of system prompt, tool definitions, conversation history, and placeholder results -- hits the cache at a 90% discount for every child after the first.
-
----
-
-## The Fork Boilerplate Tag
-
-Each child's directive is wrapped in a boilerplate XML tag that serves two purposes: it instructs the child on how to behave, and it acts as a marker for recursive fork detection.
-
-The boilerplate contains approximately 10 rules. The key ones:
-
-- **Override the parent's forking instruction.** The parent's system prompt says "default to forking" -- the boilerplate explicitly tells the child: "that instruction is for the parent. You ARE the fork. Do NOT spawn sub-agents."
-- **Execute silently, report once.** No conversational text between tool calls. Use tools directly, then produce a structured summary.
-- **Stay within scope.** The child must not expand beyond its directive.
-- **Structured output format.** The response must follow a Scope/Result/Key files/Files changed/Issues template that makes results easy for the parent to parse when multiple children report back simultaneously.
-
-Rule 1 is particularly interesting. The parent's system prompt -- which the fork child inherits verbatim for cache reasons -- contains instructions like "default to forking when you have parallel work." If the child followed that instruction, it would try to fork its own children, creating an infinite recursion of agents. The boilerplate explicitly overrides: "that instruction is for the parent. You ARE the fork."
-
-The structured output format (Scope/Result/Key files/Files changed/Issues) is not decorative. It constrains the child's output to factual reporting, which makes the results easier for the parent to parse and aggregate when five children report back simultaneously.
+Cache boundary rơi ngay trước khối văn bản cuối đó. Mọi thứ phía trên -- có thể là hàng chục nghìn tokens của system prompt, tool definitions, conversation history, và placeholder results -- cache hit với giảm giá 90% cho mọi child sau child đầu.
 
 ---
 
-## Recursive Fork Prevention
+## The Fork Boilerplate Tag (Thẻ boilerplate của fork)
 
-The fork child keeps the Agent tool in its tool pool. It has to -- removing it would change the serialized tool array and bust the prompt cache. But if the child actually invokes the Agent tool without `subagent_type`, the fork path would trigger again, creating a grandchild fork. This grandchild would inherit an even larger context (parent + child conversation), spawn its own forks, and so on.
+Chỉ thị của mỗi child được bọc trong một thẻ XML boilerplate phục vụ hai mục đích: hướng dẫn child hành xử ra sao, và làm marker để phát hiện fork đệ quy.
 
-Two guards prevent this:
+Boilerplate chứa khoảng 10 quy tắc. Những quy tắc then chốt:
 
-**Primary guard: querySource check.** When a fork child is spawned, its `context.options.querySource` is set to `'agent:builtin:fork'`. The `call()` method checks this before allowing the fork path:
+- **Override chỉ thị fork của parent.** System prompt của parent nói "mặc định dùng fork" -- boilerplate nói rõ với child: "chỉ thị đó dành cho parent. Bạn CHÍNH LÀ fork. KHÔNG spawn sub-agents."
+- **Thực thi im lặng, báo cáo một lần.** Không tạo văn bản hội thoại giữa các lần gọi tool. Dùng tool trực tiếp, rồi xuất summary có cấu trúc.
+- **Ở đúng phạm vi.** Child không được mở rộng ra ngoài chỉ thị của nó.
+- **Định dạng output có cấu trúc.** Response phải theo mẫu Scope/Result/Key files/Files changed/Issues để parent dễ parse khi nhiều child báo về cùng lúc.
+
+Quy tắc 1 đặc biệt thú vị. System prompt của parent -- thứ fork child kế thừa nguyên văn vì lý do cache -- có chỉ thị kiểu "mặc định dùng fork khi có công việc song song." Nếu child làm theo, nó sẽ fork child của chính nó, tạo đệ quy agent vô hạn. Boilerplate ghi đè rõ ràng: "chỉ thị đó dành cho parent. Bạn CHÍNH LÀ fork."
+
+Định dạng output có cấu trúc (Scope/Result/Key files/Files changed/Issues) không phải để trang trí. Nó bó đầu ra của child vào báo cáo thực tế, giúp parent parse và gom kết quả dễ hơn khi năm child báo lại đồng thời.
+
+---
+
+## Recursive Fork Prevention (Ngăn fork đệ quy)
+
+Fork child giữ Agent tool trong tool pool của nó. Nó buộc phải vậy -- bỏ đi sẽ đổi mảng tool đã serialized và làm prompt cache miss. Nhưng nếu child thực sự gọi Agent tool mà không có `subagent_type`, đường fork sẽ lại kích hoạt, tạo grandchild fork. Grandchild này thừa hưởng context còn lớn hơn (hội thoại parent + child), rồi spawn các fork của riêng nó, cứ thế tiếp diễn.
+
+Hai lớp chặn ngăn chuyện này:
+
+**Primary guard: querySource check.** Khi fork child được spawn, `context.options.querySource` của nó được đặt thành `'agent:builtin:fork'`. Hàm `call()` kiểm tra điều này trước khi cho phép đi theo nhánh fork:
 
 ```typescript
 // In AgentTool.call():
@@ -128,23 +128,23 @@ if (effectiveType === undefined) {
 }
 ```
 
-This is the fast path. It checks a single string in the options object.
+Đây là fast path. Nó chỉ kiểm tra một chuỗi duy nhất trong options object.
 
-**Fallback guard: message scanning.** Fork prevention uses two guards: the `querySource` tag set at spawn time (the fast path -- a single string comparison), and a fallback that scans message history for the boilerplate XML tag. The fallback exists because the `querySource` survives autocompact, but in edge cases where it was not properly threaded, the message-scanning fallback catches the recursion. It is a belt-and-suspenders approach where the cost of the check (scanning messages) is trivial compared to the cost of accidental recursive forking (runaway API spend).
+**Fallback guard: message scanning.** Ngăn fork dùng hai guard: thẻ `querySource` đặt tại lúc spawn (fast path -- một phép so sánh chuỗi), và fallback quét message history để tìm boilerplate XML tag. Fallback tồn tại vì `querySource` sống qua autocompact, nhưng trong các edge case khi nó không được thread đúng cách, fallback quét message sẽ chặn vòng đệ quy. Đây là cách belt-and-suspenders, nơi chi phí check (quét messages) là rất nhỏ so với chi phí fork đệ quy ngoài ý muốn (API spend chạy mất kiểm soát).
 
-Why the fallback? Because Claude Code has an autocompact feature that rewrites the message array when context gets too long. Autocompact can rewrite message content but preserves the `querySource` in options. In theory, `querySource` alone is sufficient. In practice, the message-scanning fallback catches edge cases where `querySource` was not properly threaded -- a belt-and-suspenders approach where the cost of the check (scanning messages) is trivial compared to the cost of accidental recursive forking (runaway API spend).
+Tại sao cần fallback? Vì Claude Code có tính năng autocompact, sẽ viết lại mảng message khi context quá dài. Autocompact có thể viết lại nội dung message nhưng giữ `querySource` trong options. Về lý thuyết, chỉ `querySource` là đủ. Trong thực tế, fallback quét message bắt được edge case nơi `querySource` không được thread chuẩn -- một cách belt-and-suspenders mà chi phí check (quét messages) là nhỏ bé so với chi phí fork đệ quy vô tình (runaway API spend).
 
 ---
 
-## The Sync-to-Async Transition
+## The Sync-to-Async Transition (Chuyển từ sync sang async)
 
-A fork child starts running in the foreground: its messages stream to the parent's terminal, and the parent blocks waiting for completion. But what if the child is taking too long? Claude Code allows mid-execution backgrounding -- the user (or an auto-timeout) can push a running foreground agent into the background without losing any work.
+Fork child bắt đầu chạy ở foreground: message của nó stream vào terminal của parent, và parent bị chặn để chờ hoàn tất. Nhưng nếu child chạy quá lâu thì sao? Claude Code cho phép backgrounding ngay giữa lúc thực thi -- user (hoặc auto-timeout) có thể đẩy một foreground agent đang chạy sang background mà không mất công việc nào.
 
-The mechanism is surprisingly clean:
+Cơ chế này bất ngờ là rất gọn:
 
-1. When a foreground agent is registered via `registerAgentForeground()`, a background signal promise is created.
+1. Khi một foreground agent được đăng ký qua `registerAgentForeground()`, một background signal promise được tạo.
 
-2. The parent's sync loop races between the agent's message stream and the background signal:
+2. Vòng lặp sync của parent chạy race giữa stream message của agent và background signal:
 
 ```
 while (true) {
@@ -157,95 +157,95 @@ while (true) {
 }
 ```
 
-3. When the background signal fires, the foreground iterator is gracefully terminated via `iterator.return()`. This triggers the generator's `finally` block, which handles cleanup.
+3. Khi background signal kích hoạt, foreground iterator được kết thúc êm qua `iterator.return()`. Việc này kích hoạt khối `finally` của generator, nơi xử lý cleanup.
 
-4. A new `runAgent()` instance is spawned with `isAsync: true`, using the same agent ID and the message history accumulated so far. The agent continues from where it left off, now running in the background.
+4. Một instance `runAgent()` mới được spawn với `isAsync: true`, dùng cùng agent ID và message history đã tích lũy tới thời điểm đó. Agent tiếp tục đúng chỗ đã dừng, nhưng giờ chạy ở background.
 
-5. The original synchronous `call()` returns `{ status: 'async_launched' }`, and the parent continues its conversation.
+5. Lời gọi synchronous `call()` ban đầu trả về `{ status: 'async_launched' }`, và parent tiếp tục hội thoại.
 
-No work is lost because the message history is the agent's state. The sidechain transcript on disk has every message the agent has produced. The new async instance replays from this transcript and picks up where the sync instance stopped.
-
----
-
-## Auto-Backgrounding
-
-When the `CLAUDE_AUTO_BACKGROUND_TASKS` environment variable or the `tengu_auto_background_agents` GrowthBook flag is enabled, foreground agents are automatically backgrounded after 120 seconds:
-
-When enabled via environment variable or feature flag, foreground agents are automatically backgrounded after 120 seconds. When disabled, the function returns 0 (no auto-backgrounding).
-
-This is a UX decision with cost implications. A foreground agent blocks the parent terminal -- the user cannot type, cannot issue new instructions, cannot spawn other agents. Two minutes is long enough for the agent to complete most quick tasks synchronously (where the streaming output is useful feedback), but short enough that long-running tasks do not hold the terminal hostage.
-
-Under the fork experiment, the auto-backgrounding question is moot: all fork spawns are forced async from the start. The `run_in_background` parameter is hidden from the schema entirely. Every fork child runs in the background, reports back via a `<task-notification>` when done, and the parent never blocks.
+Không có công việc nào mất vì message history chính là state của agent. Sidechain transcript trên đĩa chứa mọi message agent đã tạo. Instance async mới replay từ transcript này và tiếp tục tại điểm instance sync đã dừng.
 
 ---
 
-## When Fork Is NOT Used
+## Auto-Backgrounding (Tự động đẩy nền)
 
-Fork is one of several orchestration modes, and it is deliberately excluded in three cases:
+Khi biến môi trường `CLAUDE_AUTO_BACKGROUND_TASKS` hoặc cờ GrowthBook `tengu_auto_background_agents` được bật, foreground agents sẽ tự động chuyển sang background sau 120 giây:
 
-**Coordinator mode.** Coordinator mode and fork mode are mutually exclusive. A coordinator has a structured delegation model: it maintains a plan, assigns tasks to workers with explicit prompts, and tracks progress. Fork's "inherit everything" approach would undermine this. A forked coordinator would inherit the parent coordinator's system prompt (which says "you are the coordinator, delegate work"), and the child would try to orchestrate instead of execute. The `isForkSubagentEnabled()` function checks `isCoordinatorMode()` first and returns false if active.
+Khi bật qua biến môi trường hoặc feature flag, foreground agents sẽ tự động được đẩy nền sau 120 giây. Khi tắt, hàm trả về 0 (không auto-backgrounding).
 
-**Non-interactive sessions.** SDK and API consumers (`--print` mode, Claude Agent SDK) operate without a terminal. Fork's `permissionMode: 'bubble'` surfaces permission prompts to the parent terminal -- which does not exist in non-interactive mode. Rather than building a separate permission flow, the fork path is simply disabled. SDK consumers use explicit `subagent_type` selection instead.
+Đây là một quyết định UX có hệ quả chi phí. Foreground agent chặn terminal của parent -- user không thể gõ, không thể ra chỉ thị mới, không thể spawn agent khác. Hai phút đủ dài để agent hoàn thành hầu hết task ngắn theo kiểu synchronous (nơi streaming output cho phản hồi hữu ích), nhưng cũng đủ ngắn để task dài không giữ terminal làm con tin.
 
-**Explicit subagent_type.** When the model specifies a `subagent_type` (e.g., `"Explore"`, `"Plan"`, `"general-purpose"`), the fork path is not triggered. Fork only fires when `subagent_type` is omitted. This lets the model choose between "I want a specialized agent with its own system prompt and tool set" (explicit type) and "I want a context-inheriting clone of myself to handle this in parallel" (omitted type).
+Trong thí nghiệm fork, câu hỏi auto-backgrounding trở nên không còn ý nghĩa: mọi lần fork spawn đều bị ép async ngay từ đầu. Tham số `run_in_background` bị ẩn hoàn toàn khỏi schema. Mỗi fork child chạy ở background, báo lại qua `<task-notification>` khi xong, và parent không bao giờ bị chặn.
 
 ---
 
-## The Economics
+## When Fork Is NOT Used (Khi KHÔNG dùng Fork)
 
-Consider a concrete scenario. A developer asks Claude Code to refactor a module. The parent agent analyzes the codebase, forms a plan, and dispatches five fork children in parallel: one to update the database schema, one to rewrite the service layer, one to update the router, one to fix the tests, and one to update the types.
+Fork là một trong nhiều chế độ orchestration, và nó được cố ý loại trừ trong ba trường hợp:
 
-At this point in the conversation, the shared context is substantial:
+**Coordinator mode.** Coordinator mode và fork mode loại trừ lẫn nhau. Coordinator có mô hình ủy quyền có cấu trúc: nó giữ kế hoạch, giao task cho worker bằng prompt tường minh, và theo dõi tiến độ. Cách "kế thừa mọi thứ" của fork sẽ phá điều này. Một coordinator bị fork sẽ kế thừa system prompt của parent coordinator (nói rằng "bạn là coordinator, hãy ủy quyền công việc"), và child sẽ cố điều phối thay vì thực thi. Hàm `isForkSubagentEnabled()` kiểm tra `isCoordinatorMode()` trước và trả false nếu đang bật.
+
+**Non-interactive sessions.** SDK và API consumers (`--print` mode, Claude Agent SDK) chạy mà không có terminal. `permissionMode: 'bubble'` của fork hiển thị permission prompts lên terminal của parent -- vốn không tồn tại trong non-interactive mode. Thay vì xây flow quyền riêng, đường fork đơn giản là bị tắt. SDK consumers dùng chọn `subagent_type` tường minh.
+
+**Explicit subagent_type.** Khi model chỉ định `subagent_type` (ví dụ: `"Explore"`, `"Plan"`, `"general-purpose"`), đường fork không kích hoạt. Fork chỉ chạy khi bỏ trống `subagent_type`. Điều này cho model chọn giữa "tôi muốn một agent chuyên biệt với system prompt và tool set riêng" (type tường minh) và "tôi muốn một bản sao kế thừa context của chính tôi để xử lý song song" (bỏ trống type).
+
+---
+
+## The Economics (Bài toán kinh tế)
+
+Xét một kịch bản cụ thể. Developer yêu cầu Claude Code refactor một module. Parent agent phân tích codebase, lập kế hoạch, rồi dispatch năm fork child song song: một child cập nhật database schema, một child viết lại service layer, một child cập nhật router, một child sửa tests, và một child cập nhật types.
+
+Tại thời điểm này trong hội thoại, shared context đã rất lớn:
 - System prompt: ~4,000 tokens
 - Tool definitions (40+ tools): ~12,000 tokens
 - Conversation history (analysis + planning): ~30,000 tokens
-- Assistant message with five tool_use blocks: ~2,000 tokens
+- Assistant message với năm khối tool_use: ~2,000 tokens
 - Placeholder tool results: ~500 tokens
 
-Total shared prefix: ~48,500 tokens. Per-child directive: ~200 tokens.
+Tổng shared prefix: ~48,500 tokens. Per-child directive: ~200 tokens.
 
-Without fork (five independent agents, each with fresh context and their own system prompt):
-- Each child processes its own system prompt + tools + task prompt
-- No cache sharing (different system prompts, different tool sets)
-- Cost: 5 x full input processing
+Không dùng fork (năm agent độc lập, mỗi agent có context mới và system prompt riêng):
+- Mỗi child xử lý system prompt + tools + task prompt của chính nó
+- Không có cache sharing (khác system prompts, khác tool sets)
+- Chi phí: 5 x xử lý input giá đầy đủ
 
-With fork (byte-identical prefixes):
-- Child 1: 48,700 tokens at full price (cache miss on first request)
-- Children 2-5: 48,500 tokens at 10% price (cache hit) + 200 tokens at full price each
-- Effective cost for children 2-5: ~4,850 + 200 = ~5,050 tokens equivalent each
+Dùng fork (byte-identical prefixes):
+- Child 1: 48,700 tokens giá đầy đủ (cache miss ở request đầu)
+- Child 2-5: 48,500 tokens ở 10% giá (cache hit) + 200 tokens giá đầy đủ mỗi child
+- Chi phí hiệu dụng cho child 2-5: ~4,850 + 200 = ~5,050 token tương đương mỗi child
 
-The savings scale with context size and child count. For a warm session with 100K tokens of history spawning 8 parallel forks, the cache savings can exceed 90% of what the input tokens would have cost without sharing.
+Mức tiết kiệm tăng theo kích thước context và số lượng child. Với một phiên đã ấm có 100K tokens history và spawn 8 fork song song, phần cache savings có thể vượt 90% so với chi phí input tokens nếu không chia sẻ.
 
-This is why every design decision in the fork system -- the threading instead of recomputation, the exact tool passthrough, the placeholder results, even keeping the Agent tool in the child's pool despite it being forbidden -- optimizes for one thing: byte-identical prefixes. Each decision trades a small amount of elegance or safety for a measurable reduction in API cost.
+Đó là lý do mọi quyết định thiết kế trong hệ thống fork -- thread thay vì tính lại, exact tool passthrough, placeholder results, kể cả việc giữ Agent tool trong pool của child dù bị cấm dùng -- đều tối ưu cho một mục tiêu: byte-identical prefixes. Mỗi quyết định đánh đổi một chút thanh lịch hoặc an toàn để đổi lấy giảm chi phí API đo được.
 
 ---
 
-## Design Tensions
+## Design Tensions (Các lực căng thiết kế)
 
-The fork system makes explicit trade-offs that are worth understanding:
+Hệ thống fork có những đánh đổi tường minh đáng để hiểu:
 
-**Isolation vs. cache efficiency.** Fork children inherit everything, including conversation history that may be irrelevant to their task. A child rewriting tests does not need the 15 messages where the parent discussed database schema design. But including those messages is what makes the prefix identical. Stripping irrelevant history would save context window space at the cost of busting the cache. The design bet is that cache savings outweigh the context overhead.
+**Isolation vs. cache efficiency.** Fork child kế thừa mọi thứ, bao gồm cả conversation history có thể không liên quan đến task của nó. Một child đang viết lại tests không cần 15 message nơi parent bàn về database schema design. Nhưng giữ các message đó mới giúp prefix giống hệt. Lược bỏ history không liên quan sẽ tiết kiệm context window nhưng làm cache miss. Cược thiết kế ở đây là cache savings lớn hơn chi phí context overhead.
 
-**Safety vs. cache efficiency.** The Agent tool stays in the fork child's tool pool even though the child must not use it. Removing it would be safer (the child cannot even attempt to fork), but would change the tool array serialization. The boilerplate tag and recursive fork guards are the compensating controls -- runtime prevention instead of static removal.
+**Safety vs. cache efficiency.** Agent tool được giữ trong tool pool của fork child dù child không được phép dùng. Bỏ nó đi sẽ an toàn hơn (child không thể thử fork), nhưng sẽ đổi serialization của mảng tool. Boilerplate tag và recursive fork guards là các kiểm soát bù -- ngăn ở runtime thay vì loại bỏ tĩnh.
 
-**Simplicity vs. cache efficiency.** The placeholder tool results are a lie. The child sees `'Fork started -- processing in background'` for every tool_use block in the parent's assistant message, regardless of what those tool calls actually did. This is fine because the child's directive tells it what to do -- it does not need accurate tool results from the parent's dispatching turn. But it means the child's conversation history is technically incoherent. The placeholder is chosen for brevity and uniformity, not accuracy.
+**Simplicity vs. cache efficiency.** Placeholder tool results là một sự giả lập. Child thấy `'Fork started -- processing in background'` cho mọi khối tool_use trong assistant message của parent, bất kể những tool call đó thực sự làm gì. Điều này chấp nhận được vì chỉ thị của child đã nói rõ phải làm gì -- nó không cần tool results chính xác từ lượt dispatch của parent. Nhưng cũng có nghĩa conversation history của child về mặt kỹ thuật là thiếu nhất quán. Placeholder được chọn vì ngắn gọn và đồng nhất, không phải vì chính xác.
 
-Each of these trade-offs reflects the same priority: when you are paying per-token for API calls at scale, byte-identical prefixes are worth contorting the architecture around.
+Mỗi đánh đổi này phản ánh cùng một ưu tiên: khi bạn trả tiền theo token cho API calls ở quy mô lớn, byte-identical prefixes đáng để bẻ kiến trúc xoay quanh chúng.
 
 ---
 
 ## Apply This: Designing for Prompt Cache Efficiency
 
-The fork agent pattern generalizes beyond Claude Code. Any system that dispatches multiple parallel LLM calls from the same context can benefit from cache-aware request construction. The principles:
+Mẫu fork agent có thể tổng quát vượt ra ngoài Claude Code. Bất kỳ hệ thống nào dispatch nhiều LLM call song song từ cùng một context đều có thể hưởng lợi từ cache-aware request construction. Các nguyên tắc:
 
-**1. Thread rendered prompts, do not recompute.** If your system prompt includes any dynamic content -- feature flags, timestamps, user preferences, A/B test variants -- capture the rendered result and pass it to children by value. Recomputing risks divergence.
+**1. Thread rendered prompts, do not recompute.** Nếu system prompt của bạn có bất kỳ nội dung động nào -- feature flags, timestamps, user preferences, biến thể A/B test -- hãy chụp kết quả đã render và truyền cho child theo giá trị. Tính lại có rủi ro sai lệch.
 
-**2. Freeze the tool array.** If your children need different tool sets, you are giving up cache sharing on the tools block. Consider keeping the full tool set and using runtime guards (like the fork boilerplate's "do not use Agent") instead of compile-time removal.
+**2. Freeze the tool array.** Nếu child của bạn cần các tool set khác nhau, bạn đang từ bỏ cache sharing trên khối tools. Hãy cân nhắc giữ full tool set và dùng runtime guards (như quy tắc "do not use Agent" trong fork boilerplate) thay vì compile-time removal.
 
-**3. Maximize the shared prefix, minimize the per-child suffix.** Structure your message array so that everything shared comes first and per-child content is appended at the end. Interleaving shared and per-child content fragments the cache boundary.
+**3. Maximize the shared prefix, minimize the per-child suffix.** Hãy cấu trúc mảng message sao cho mọi phần dùng chung nằm ở đầu, và nội dung per-child được nối ở cuối. Trộn xen kẽ mảnh shared và per-child sẽ làm vỡ cache boundary.
 
-**4. Use constant placeholders for variable content.** When the message structure requires responses to previous tool calls, use identical placeholder strings across all children rather than actual (divergent) results.
+**4. Use constant placeholders for variable content.** Khi cấu trúc message bắt buộc phải có phản hồi cho các tool call trước đó, hãy dùng chuỗi placeholder giống hệt cho mọi child thay vì kết quả thực (vốn khác nhau).
 
-**5. Measure the break-even.** Cache sharing has overhead: larger context windows per child (they carry irrelevant history), runtime guards instead of static safety, architectural complexity. Calculate whether your parallelism pattern (how many children, how large the shared prefix) actually saves money after accounting for the extra context tokens.
+**5. Measure the break-even.** Cache sharing có overhead: context window lớn hơn cho mỗi child (vì mang history không liên quan), runtime guards thay cho an toàn tĩnh, độ phức tạp kiến trúc cao hơn. Hãy tính xem mô hình song song của bạn (bao nhiêu child, shared prefix lớn cỡ nào) có thật sự tiết kiệm tiền sau khi tính thêm tokens context hay không.
 
-The fork agent system is, at its core, a prompt cache exploitation engine. It answers a question that every multi-agent system builder eventually faces: when the cache gives you a 90% discount on repeated prefixes, how far will you restructure your architecture to claim that discount? Claude Code's answer is: very far.
+Hệ thống fork agent, về cốt lõi, là một động cơ khai thác prompt cache. Nó trả lời câu hỏi mà mọi người xây multi-agent system sớm muộn đều gặp: khi cache cho bạn giảm giá 90% với prefix lặp lại, bạn sẵn sàng tái cấu trúc kiến trúc đến mức nào để lấy được mức giảm đó? Câu trả lời của Claude Code là: rất xa.

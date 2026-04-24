@@ -1,18 +1,18 @@
-# Chapter 15: MCP -- The Universal Tool Protocol
+# Chương 15: MCP -- The Universal Tool Protocol
 
 ## Why MCP Matters Beyond Claude Code
 
-Every other chapter in this book is about Claude Code's internals. This one is different. The Model Context Protocol is an open specification that any agent can implement, and Claude Code's MCP subsystem is one of the most complete production clients in existence. If you are building an agent that needs to call external tools -- any agent, in any language, on any model -- the patterns in this chapter transfer directly.
+Mọi chương khác trong cuốn sách này đều nói về nội tại của Claude Code. Chương này thì khác. Model Context Protocol (Giao thức Ngữ cảnh Mô hình) là một đặc tả mở mà bất kỳ agent nào cũng có thể triển khai, và phân hệ MCP của Claude Code là một trong những client production đầy đủ nhất hiện có. Nếu bạn đang xây một agent cần gọi công cụ bên ngoài -- bất kỳ agent nào, bằng bất kỳ ngôn ngữ nào, trên bất kỳ model nào -- các mẫu trong chương này đều chuyển giao trực tiếp được.
 
-The core proposition is straightforward: MCP defines a JSON-RPC 2.0 protocol for tool discovery and invocation between a client (the agent) and a server (the tool provider). The client sends `tools/list` to discover what a server offers, then `tools/call` to execute. The server describes each tool with a name, description, and JSON Schema for its inputs. That is the entire contract. Everything else -- transport selection, authentication, config loading, tool name normalization -- is the implementation work that turns a clean spec into something that survives contact with the real world.
+Giá trị cốt lõi rất thẳng: MCP định nghĩa một giao thức JSON-RPC 2.0 để khám phá và gọi công cụ giữa client (agent) và server (nhà cung cấp công cụ). Client gửi `tools/list` để khám phá server cung cấp gì, rồi `tools/call` để thực thi. Server mô tả từng công cụ bằng tên, mô tả, và JSON Schema cho đầu vào của nó. Đó là toàn bộ hợp đồng. Mọi thứ còn lại -- chọn transport, xác thực, nạp config, chuẩn hóa tên công cụ -- là phần triển khai biến một đặc tả gọn gàng thành thứ có thể sống sót khi va chạm với thế giới thực.
 
-Claude Code's MCP implementation spans four core files: `types.ts`, `client.ts`, `auth.ts`, and `InProcessTransport.ts`. Together they support eight transport types, seven configuration scopes, OAuth discovery across two RFCs, and a tool wrapping layer that makes MCP tools indistinguishable from built-in ones -- the same `Tool` interface covered in Chapter 6. This chapter walks through each layer.
+Triển khai MCP của Claude Code trải dài trên bốn file lõi: `types.ts`, `client.ts`, `auth.ts`, và `InProcessTransport.ts`. Gộp lại, chúng hỗ trợ tám loại transport, bảy phạm vi cấu hình, OAuth discovery qua hai RFC, và một lớp bọc công cụ khiến công cụ MCP không thể phân biệt với công cụ built-in -- cùng interface `Tool` đã nói ở Chương 6. Chương này đi qua từng lớp.
 
 ---
 
 ## Eight Transport Types
 
-The first design decision in any MCP integration is how the client talks to the server. Claude Code supports eight transport configurations:
+Quyết định thiết kế đầu tiên trong mọi tích hợp MCP là client nói chuyện với server bằng cách nào. Claude Code hỗ trợ tám cấu hình transport:
 
 ```mermaid
 flowchart TD
@@ -47,49 +47,49 @@ flowchart TD
     style HTTP fill:#bbdefb
 ```
 
-Three design choices are worth noting. First, `stdio` is the default -- when `type` is omitted, the system assumes a local subprocess. This is backwards-compatible with the earliest MCP configs. Second, the fetch wrappers stack: timeout wrapping outside step-up detection, outside the base fetch. Each wrapper handles one concern. Third, the `ws-ide` branch has a Bun/Node runtime split -- Bun's `WebSocket` accepts proxy and TLS options natively, while Node requires the `ws` package.
+Ba lựa chọn thiết kế đáng chú ý. Thứ nhất, `stdio` là mặc định -- khi bỏ qua `type`, hệ thống giả định một subprocess cục bộ. Điều này tương thích ngược với các cấu hình MCP sớm nhất. Thứ hai, các fetch wrapper được xếp chồng: lớp timeout bọc ngoài lớp step-up detection, rồi bọc ngoài base fetch. Mỗi wrapper xử lý một mối quan tâm. Thứ ba, nhánh `ws-ide` có tách runtime Bun/Node -- `WebSocket` của Bun nhận tùy chọn proxy và TLS theo chuẩn native, còn Node thì cần package `ws`.
 
-**When to use which.** For local tools (filesystem, database, custom scripts), `stdio` -- no network, no auth, just pipes. For remote services, `http` (Streamable HTTP) is the current spec recommendation. `sse` is legacy but widely deployed. The `sdk`, IDE, and `claudeai-proxy` types are internal to their respective ecosystems.
+**When to use which.** Với công cụ cục bộ (filesystem, database, script tùy chỉnh), dùng `stdio` -- không mạng, không auth, chỉ có pipe. Với dịch vụ từ xa, `http` (Streamable HTTP) là khuyến nghị đặc tả hiện tại. `sse` là legacy nhưng vẫn triển khai rộng. Các loại `sdk`, IDE, và `claudeai-proxy` là nội bộ trong hệ sinh thái tương ứng của chúng.
 
 ---
 
 ## Configuration Loading and Scoping
 
-MCP server configs load from seven scopes, merged and deduplicated:
+Cấu hình server MCP được nạp từ bảy scope, rồi hợp nhất và loại trùng:
 
-| Scope | Source | Trust |
+| Scope | Nguồn | Mức tin cậy |
 |-------|--------|-------|
-| `local` | `.mcp.json` in working directory | Requires user approval |
-| `user` | `~/.claude.json` mcpServers field | User-managed |
-| `project` | Project-level config | Shared project settings |
-| `enterprise` | Managed enterprise config | Pre-approved by org |
-| `managed` | Plugin-provided servers | Auto-discovered |
-| `claudeai` | Claude.ai web interface | Pre-authorized via web |
-| `dynamic` | Runtime injection (SDK) | Programmatically added |
+| `local` | `.mcp.json` trong thư mục làm việc | Cần người dùng phê duyệt |
+| `user` | Trường mcpServers trong `~/.claude.json` | Do người dùng quản lý |
+| `project` | Cấu hình cấp dự án | Thiết lập dùng chung cho dự án |
+| `enterprise` | Cấu hình enterprise được quản trị | Được tổ chức phê duyệt sẵn |
+| `managed` | Server do plugin cung cấp | Tự động khám phá |
+| `claudeai` | Giao diện web Claude.ai | Được ủy quyền sẵn qua web |
+| `dynamic` | Tiêm lúc runtime (SDK) | Được thêm bằng chương trình |
 
-**Deduplication is content-based, not name-based.** Two servers with different names but the same command or URL are recognized as the same server. The `getMcpServerSignature()` function computes a canonical key: `stdio:["command","arg1"]` for local servers, `url:https://example.com/mcp` for remote ones. Plugin-provided servers whose signature matches a manual config are suppressed.
+**Deduplication is content-based, not name-based.** Hai server tên khác nhau nhưng cùng command hoặc URL được nhận diện là cùng một server. Hàm `getMcpServerSignature()` tính khóa canonical: `stdio:["command","arg1"]` cho server cục bộ, `url:https://example.com/mcp` cho server từ xa. Server do plugin cung cấp có signature trùng với config thủ công sẽ bị suppress.
 
 ---
 
 ## Tool Wrapping: From MCP to Claude Code
 
-When a connection succeeds, the client calls `tools/list`. Each tool definition is transformed into Claude Code's internal `Tool` interface -- the same interface used by built-in tools. After wrapping, the model cannot distinguish between a built-in tool and an MCP tool.
+Khi kết nối thành công, client gọi `tools/list`. Mỗi định nghĩa công cụ được chuyển thành interface `Tool` nội bộ của Claude Code -- cùng interface mà công cụ built-in dùng. Sau khi bọc, model không thể phân biệt công cụ built-in với công cụ MCP.
 
-The wrapping process has four stages:
+Quy trình bọc có bốn giai đoạn:
 
-**1. Name normalization.** `normalizeNameForMCP()` replaces invalid characters with underscores. The fully qualified name follows `mcp__{serverName}__{toolName}`.
+**1. Name normalization.** `normalizeNameForMCP()` thay ký tự không hợp lệ bằng dấu gạch dưới. Fully qualified name theo dạng `mcp__{serverName}__{toolName}`.
 
-**2. Description truncation.** Capped at 2,048 characters. OpenAPI-generated servers have been observed dumping 15-60KB into `tool.description` -- roughly 15,000 tokens per turn for a single tool.
+**2. Description truncation.** Giới hạn ở 2,048 ký tự. Các server sinh từ OpenAPI đã từng đổ 15-60KB vào `tool.description` -- khoảng 15,000 token mỗi lượt cho chỉ một công cụ.
 
-**3. Schema passthrough.** The tool's `inputSchema` passes directly to the API. No transformation, no validation at wrapping time. Schema errors surface at call time, not registration time.
+**3. Schema passthrough.** `inputSchema` của công cụ đi thẳng tới API. Không biến đổi, không kiểm tra ở thời điểm bọc. Lỗi schema lộ ra ở lúc gọi, không phải lúc đăng ký.
 
-**4. Annotation mapping.** MCP annotations map to behavior flags: `readOnlyHint` marks tools safe for concurrent execution (as discussed in Chapter 7's streaming executor), `destructiveHint` triggers extra permission scrutiny. These annotations come from the MCP server -- a malicious server could mark a destructive tool as read-only. This is an accepted trust boundary, but one worth understanding: the user opted into the server, and a malicious server marking destructive tools as read-only is a real attack vector. The system accepts this tradeoff because the alternative -- ignoring annotations entirely -- would prevent legitimate servers from improving the user experience.
+**4. Annotation mapping.** Annotation MCP ánh xạ thành cờ hành vi: `readOnlyHint` đánh dấu công cụ an toàn để thực thi đồng thời (như đã bàn trong streaming executor của Chương 7), `destructiveHint` kích hoạt soi xét quyền kỹ hơn. Các annotation này đến từ MCP server -- một server độc hại có thể đánh dấu công cụ phá hủy là read-only. Đây là trust boundary được chấp nhận, nhưng cần hiểu rõ: người dùng đã chủ động chọn server đó, và server độc hại đánh dấu sai là một vector tấn công có thật. Hệ thống chấp nhận đánh đổi này vì phương án ngược lại -- bỏ qua hoàn toàn annotation -- sẽ ngăn các server hợp lệ cải thiện trải nghiệm người dùng.
 
 ---
 
 ## OAuth for MCP Servers
 
-Remote MCP servers often require authentication. Claude Code implements the full OAuth 2.0 + PKCE flow with RFC-based discovery, Cross-App Access, and error body normalization.
+MCP server từ xa thường cần xác thực. Claude Code triển khai đầy đủ luồng OAuth 2.0 + PKCE với discovery theo RFC, Cross-App Access, và Error Body Normalization (Chuẩn hóa phần thân lỗi).
 
 ### Discovery Chain
 
@@ -111,21 +111,21 @@ flowchart TD
     style I fill:#ffcdd2
 ```
 
-The `authServerMetadataUrl` escape hatch exists because some OAuth servers implement neither RFC.
+Lối thoát `authServerMetadataUrl` tồn tại vì một số OAuth server không triển khai RFC nào trong hai RFC đó.
 
 ### Cross-App Access (XAA)
 
-When an MCP server config has `oauth.xaa: true`, the system performs federated token exchange through an Identity Provider -- one IdP login unlocks multiple MCP servers.
+Khi cấu hình MCP server có `oauth.xaa: true`, hệ thống thực hiện federated token exchange thông qua một Identity Provider -- một lần đăng nhập IdP mở khóa nhiều MCP server.
 
 ### Error Body Normalization
 
-The `normalizeOAuthErrorBody()` function handles OAuth servers that violate the spec. Slack returns HTTP 200 for error responses with the error buried in the JSON body. The function peeks at 2xx POST response bodies, and when the body matches `OAuthErrorResponseSchema` but not `OAuthTokensSchema`, rewrites the response to HTTP 400. It also normalizes Slack-specific error codes (`invalid_refresh_token`, `expired_refresh_token`, `token_expired`) to the standard `invalid_grant`.
+Hàm `normalizeOAuthErrorBody()` xử lý các OAuth server vi phạm đặc tả. Slack trả về HTTP 200 cho phản hồi lỗi với lỗi bị chôn trong JSON body. Hàm này soi body của phản hồi POST 2xx, và khi body khớp `OAuthErrorResponseSchema` nhưng không khớp `OAuthTokensSchema`, nó ghi đè phản hồi thành HTTP 400. Nó cũng chuẩn hóa các mã lỗi riêng của Slack (`invalid_refresh_token`, `expired_refresh_token`, `token_expired`) về chuẩn `invalid_grant`.
 
 ---
 
 ## In-Process Transport
 
-Not every MCP server needs to be a separate process. The `InProcessTransport` class enables running an MCP server and client in the same process:
+Không phải MCP server nào cũng cần là process riêng. Lớp `InProcessTransport` cho phép chạy MCP server và client trong cùng một process:
 
 ```typescript
 class InProcessTransport implements Transport {
@@ -145,7 +145,7 @@ class InProcessTransport implements Transport {
 }
 ```
 
-The entire file is 63 lines. Two design decisions deserve attention. First, `send()` delivers via `queueMicrotask()` to prevent stack depth issues in synchronous request/response cycles. Second, `close()` cascades to the peer, preventing half-open states. The Chrome MCP server and Computer Use MCP server both use this pattern.
+Toàn bộ file chỉ 63 dòng. Hai quyết định thiết kế đáng chú ý. Thứ nhất, `send()` chuyển qua `queueMicrotask()` để tránh vấn đề độ sâu stack trong các chu kỳ request/response đồng bộ. Thứ hai, `close()` cascade sang peer, ngăn trạng thái half-open. Cả Chrome MCP server và Computer Use MCP server đều dùng mẫu này.
 
 ---
 
@@ -153,11 +153,11 @@ The entire file is 63 lines. Two design decisions deserve attention. First, `sen
 
 ### Connection States
 
-Each MCP server connection exists in one of five states: `connected`, `failed`, `needs-auth` (with a 15-minute TTL cache to prevent 30 servers from independently discovering the same expired token), `pending`, or `disabled`.
+Mỗi kết nối MCP server tồn tại trong một trong năm trạng thái: `connected`, `failed`, `needs-auth` (với cache TTL 15 phút để ngăn 30 server tự khám phá cùng một token đã hết hạn một cách độc lập), `pending`, hoặc `disabled`.
 
 ### Session Expiry Detection
 
-MCP's Streamable HTTP transport uses session IDs. When a server restarts, requests return HTTP 404 with JSON-RPC error code -32001. The `isMcpSessionExpiredError()` function checks both signals -- note that it uses string inclusion on the error message to detect the error code, which is pragmatic but fragile:
+Transport Streamable HTTP của MCP dùng session ID. Khi server khởi động lại, request trả về HTTP 404 với mã lỗi JSON-RPC -32001. Hàm `isMcpSessionExpiredError()` kiểm tra cả hai tín hiệu -- lưu ý rằng hàm dùng phép chứa chuỗi trên thông báo lỗi để phát hiện mã lỗi, thực dụng nhưng mong manh:
 
 ```typescript
 export function isMcpSessionExpiredError(error: Error): boolean {
@@ -168,49 +168,49 @@ export function isMcpSessionExpiredError(error: Error): boolean {
 }
 ```
 
-On detection, the connection cache clears and the call retries once.
+Khi phát hiện, cache kết nối bị xóa và lệnh gọi được thử lại một lần.
 
 ### Batched Connections
 
-Local servers connect in batches of 3 (spawning processes can exhaust file descriptors), remote servers in batches of 20. The React context provider `MCPConnectionManager.tsx` manages the lifecycle, diffing current connections against new configs.
+Server cục bộ kết nối theo lô 3 (spawn process có thể làm cạn file descriptor), server từ xa theo lô 20. React context provider `MCPConnectionManager.tsx` quản lý vòng đời, diff các kết nối hiện tại với config mới.
 
 ---
 
 ## Claude.ai Proxy Transport
 
-The `claudeai-proxy` transport illustrates a common agent integration pattern: connecting through an intermediary. Claude.ai subscribers configure MCP "connectors" through the web interface, and the CLI routes through Claude.ai's infrastructure which handles vendor-side OAuth.
+Transport `claudeai-proxy` minh họa một mẫu tích hợp agent phổ biến: kết nối qua một trung gian. Người dùng Claude.ai cấu hình MCP "connectors" qua giao diện web, và CLI định tuyến qua hạ tầng Claude.ai, nơi xử lý OAuth phía nhà cung cấp.
 
-The `createClaudeAiProxyFetch()` function captures the `sentToken` at request time, not re-read after a 401. Under concurrent 401s from multiple connectors, another connector's retry might have already refreshed the token. The function also checks for concurrent refreshes even when the refresh handler returns false -- the "ELOCKED contention" case where another connector won the lockfile race.
+Hàm `createClaudeAiProxyFetch()` chụp `sentToken` tại thời điểm gửi request, không đọc lại sau 401. Dưới các 401 đồng thời từ nhiều connector, retry của connector khác có thể đã refresh token xong. Hàm cũng kiểm tra refresh đồng thời ngay cả khi trình xử lý refresh trả false -- trường hợp tranh chấp "ELOCKED contention" khi connector khác thắng cuộc đua lockfile.
 
 ---
 
 ## Timeout Architecture
 
-MCP timeouts are layered, each protecting against a different failure mode:
+Timeout MCP được phân lớp, mỗi lớp bảo vệ trước một kiểu lỗi khác nhau:
 
-| Layer | Duration | Protects Against |
+| Layer | Thời lượng | Bảo vệ trước |
 |-------|----------|------------------|
-| Connection | 30s | Unreachable or slow-starting servers |
-| Per-request | 60s (fresh per request) | Stale timeout signal bug |
-| Tool call | ~27.8 hours | Legitimately long operations |
-| Auth | 30s per OAuth request | Unreachable OAuth servers |
+| Connection | 30s | Server không tới được hoặc khởi động chậm |
+| Per-request | 60s (mới cho mỗi request) | Lỗi stale timeout signal |
+| Tool call | ~27.8 giờ | Tác vụ thực sự chạy rất lâu |
+| Auth | 30s cho mỗi OAuth request | OAuth server không tới được |
 
-The per-request timeout deserves emphasis. Early implementations created a single `AbortSignal.timeout(60000)` at connection time. After 60 seconds of idle time, the next request would abort immediately -- the signal was already expired. The fix: `wrapFetchWithTimeout()` creates a fresh timeout signal for every request. It also normalizes the `Accept` header as a last-step defense against runtimes and proxies that drop it.
+Timeout per-request đáng nhấn mạnh. Các bản triển khai sớm tạo một `AbortSignal.timeout(60000)` duy nhất ở thời điểm kết nối. Sau 60 giây rỗi, request kế tiếp sẽ abort ngay -- signal đã hết hạn sẵn. Bản sửa: `wrapFetchWithTimeout()` tạo timeout signal mới cho từng request. Nó cũng chuẩn hóa header `Accept` như lớp phòng thủ bước cuối trước runtime và proxy có thể làm rơi header này.
 
 ---
 
 ## Apply This: Integrating MCP Into Your Own Agent
 
-**Start with stdio, add complexity later.** `StdioClientTransport` handles everything: spawn, pipe, kill. One line of config, one transport class, and you have MCP tools.
+**Start with stdio, add complexity later.** `StdioClientTransport` xử lý tất cả: spawn, pipe, kill. Một dòng config, một lớp transport, và bạn có công cụ MCP.
 
-**Normalize names and truncate descriptions.** Names must match `^[a-zA-Z0-9_-]{1,64}$`. Prefix with `mcp__{serverName}__` to avoid collisions. Cap descriptions at 2,048 characters -- OpenAPI-generated servers will waste context tokens otherwise.
+**Normalize names and truncate descriptions.** Tên phải khớp `^[a-zA-Z0-9_-]{1,64}$`. Thêm tiền tố `mcp__{serverName}__` để tránh đụng tên. Giới hạn mô tả ở 2,048 ký tự -- server sinh từ OpenAPI nếu không sẽ lãng phí token ngữ cảnh.
 
-**Handle auth lazily.** Do not attempt OAuth until a server returns 401. Most stdio servers need no auth.
+**Handle auth lazily.** Đừng cố OAuth cho tới khi server trả 401. Phần lớn server `stdio` không cần auth.
 
-**Use in-process transport for built-in servers.** `createLinkedTransportPair()` eliminates subprocess overhead for servers you control.
+**Use in-process transport for built-in servers.** `createLinkedTransportPair()` loại bỏ overhead subprocess cho các server bạn kiểm soát.
 
-**Respect tool annotations and sanitize output.** `readOnlyHint` enables concurrent execution. Sanitize responses against malicious Unicode (bidirectional overrides, zero-width joiners) that could mislead the model.
+**Respect tool annotations and sanitize output.** `readOnlyHint` bật thực thi đồng thời. Làm sạch phản hồi trước Unicode độc hại (bidirectional overrides, zero-width joiners) có thể đánh lừa model.
 
-The MCP protocol is deliberately minimal -- two JSON-RPC methods. Everything between those methods and a production deployment is engineering: eight transports, seven config scopes, two OAuth RFCs, and timeout layering. Claude Code's implementation shows what that engineering looks like at scale.
+Giao thức MCP cố ý tối giản -- hai phương thức JSON-RPC. Mọi thứ giữa hai phương thức đó và một triển khai production là kỹ thuật: tám transport, bảy scope config, hai OAuth RFC, và timeout layering. Triển khai của Claude Code cho thấy phần kỹ thuật đó trông như thế nào ở quy mô lớn.
 
-The next chapter examines what happens when the agent reaches beyond localhost: the remote execution protocols that let Claude Code run in cloud containers, accept instructions from web browsers, and tunnel API traffic through credential-injecting proxies.
+Chương tiếp theo xem điều gì xảy ra khi agent vươn ra ngoài localhost: các giao thức thực thi từ xa cho phép Claude Code chạy trong container đám mây, nhận chỉ thị từ trình duyệt web, và tunnel lưu lượng API qua các proxy tiêm credential.

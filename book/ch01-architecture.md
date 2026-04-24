@@ -1,20 +1,20 @@
-# Chapter 1: The Architecture of an AI Agent
+# Chương 1: Kiến trúc của một AI Agent
 
 ## What You're Looking At
 
-A traditional CLI is a function. It takes arguments, does work, and exits. `grep` does not decide to also run `sed`. `curl` does not open a file and patch it based on what it downloaded. The contract is simple: one command, one action, deterministic output.
+Một CLI truyền thống là một hàm: nhận đối số, thực thi công việc, rồi thoát. `grep` không tự quyết định chạy thêm `sed`. `curl` không tự mở file rồi vá nội dung dựa trên thứ nó vừa tải về. Hợp đồng rất rõ: một lệnh, một hành động, đầu ra xác định.
 
-An agentic CLI breaks every part of that contract. It takes a natural language prompt, decides what tools to use, executes them in whatever order the situation demands, evaluates the results, and loops until the task is done or the user stops it. The "program" is not a fixed sequence of instructions -- it is a loop around a language model that generates its own instruction sequence at runtime. The tool calls are the side effects. The model's reasoning is the control flow.
+Một agentic CLI phá vỡ toàn bộ hợp đồng đó. Nó nhận prompt ngôn ngữ tự nhiên, tự quyết định dùng tool nào, thực thi theo thứ tự tình huống yêu cầu, đánh giá kết quả, rồi lặp cho đến khi tác vụ hoàn tất hoặc người dùng dừng lại. "Chương trình" không còn là một chuỗi lệnh cố định -- nó là vòng lặp bao quanh một language model, nơi chuỗi lệnh được sinh ra ngay lúc runtime. Tool calls là side effects. Lập luận của model chính là control flow.
 
-Claude Code is Anthropic's production implementation of this idea: a TypeScript monolith of nearly two thousand files that turns a terminal into a full development environment powered by Claude. It shipped to hundreds of thousands of developers, which means every architectural decision carries real-world consequences. This chapter gives you the mental model. Six abstractions define the entire system. A single data flow connects them. Once you internalize the golden path from keystroke to final output, every subsequent chapter is a zoom into one segment of that path.
+Claude Code là triển khai production của Anthropic cho ý tưởng này: một TypeScript monolith gần 2.000 file, biến terminal thành môi trường phát triển đầy đủ do Claude vận hành. Nó đã đến tay hàng trăm nghìn developer, nên mọi quyết định kiến trúc đều có hệ quả thực tế. Chương này đưa cho bạn mental model nền tảng. Có sáu abstractions định nghĩa toàn bộ hệ thống. Có một luồng dữ liệu thống nhất kết nối chúng. Khi bạn nắm được golden path từ keystroke đến output cuối cùng, các chương sau chỉ là phóng to từng đoạn của luồng đó.
 
-What follows is a retrospective decomposition -- these six abstractions were not designed upfront on a whiteboard. They emerged from the pressures of shipping a production agent to a large user base. Understanding them as they are, not as they were planned, sets the right expectations for the rest of the book.
+Những gì bạn sắp đọc là một retrospective decomposition -- sáu abstractions này không được vẽ sẵn trên whiteboard ngay từ đầu. Chúng hình thành dưới áp lực vận hành một production agent cho lượng người dùng lớn. Hiểu chúng theo đúng hiện trạng (thay vì theo thiết kế lý tưởng ban đầu) là cách đặt kỳ vọng đúng cho phần còn lại của cuốn sách.
 
 ---
 
 ## The Six Key Abstractions
 
-Claude Code is built on six core abstractions. Everything else -- the 400+ utility files, the forked terminal renderer, the vim emulation, the cost tracker -- exists to support these six.
+Claude Code được xây trên sáu abstractions cốt lõi. Mọi thứ khác -- hơn 400 utility files, terminal renderer được fork, vim emulation, cost tracker -- tồn tại để phục vụ sáu phần này.
 
 ```mermaid
 graph TD
@@ -30,25 +30,25 @@ graph TD
     Memory["Memory<br/>CLAUDE.md, MEMORY.md<br/>LLM-powered relevance"] -->|injected into system prompt| QL
 ```
 
-Here is what each one does and why it exists.
+Dưới đây là vai trò của từng phần và lý do nó tồn tại.
 
-**1. The Query Loop** (`query.ts`, ~1,700 lines). An async generator that is the heartbeat of the entire system. It streams a model response, collects tool calls, executes them, appends results to the message history, and loops. Every interaction -- REPL, SDK, sub-agent, headless `--print` -- flows through this single function. It yields `Message` objects that the UI consumes. Its return type is a discriminated union called `Terminal` that encodes exactly why the loop stopped: normal completion, user abort, token budget exhaustion, stop hook intervention, max turns, or unrecoverable error. The generator pattern -- rather than callbacks or event emitters -- gives natural backpressure, clean cancellation, and typed terminal states. Chapter 5 covers the loop's internals in full.
+**1. The Query Loop** (`query.ts`, ~1,700 lines). Đây là async generator đóng vai trò nhịp tim của toàn hệ thống. Nó stream phản hồi từ model, thu thập tool calls, thực thi tool, thêm kết quả vào message history, rồi lặp tiếp. Mọi tương tác -- REPL, SDK, sub-agent, headless `--print` -- đều đi qua duy nhất hàm này. Nó yield `Message` objects để UI tiêu thụ. Kiểu trả về là discriminated union tên `Terminal`, mã hóa chính xác vì sao loop dừng: hoàn tất bình thường, user abort, cạn token budget, stop hook can thiệp, vượt max turns, hoặc unrecoverable error. Generator pattern -- thay vì callbacks hay event emitters -- cho backpressure tự nhiên, khả năng hủy sạch, và terminal states có typing rõ ràng. Chương 5 sẽ bóc tách chi tiết nội bộ loop này.
 
-**2. The Tool System** (`Tool.ts`, `tools.ts`, `services/tools/`). A tool is anything the agent can do in the world: read a file, run a shell command, edit code, search the web. That simplicity of purpose hides significant machinery. Each tool implements a rich interface covering identity, schema, execution, permissions, and rendering. Tools are not just functions -- they carry their own permission logic, concurrency declarations, progress reporting, and UI rendering. The system partitions tool calls into concurrent and serial batches, and a streaming executor starts concurrency-safe tools before the model even finishes its response. Chapter 6 covers the full tool interface and execution pipeline.
+**2. The Tool System** (`Tool.ts`, `tools.ts`, `services/tools/`). Tool là mọi thứ agent có thể làm với thế giới bên ngoài: đọc file, chạy shell command, chỉnh sửa code, tìm web. Sự đơn giản ở mục tiêu này che giấu một lớp machinery đáng kể bên dưới. Mỗi tool triển khai interface phong phú bao gồm identity, schema, execution, permissions, và rendering. Tool không chỉ là hàm -- mỗi tool mang logic quyền riêng, khai báo concurrency, progress reporting, và UI rendering. Hệ thống chia tool calls thành concurrent batches và serial batches; một streaming executor còn có thể khởi chạy concurrency-safe tools trước cả khi model phát xong phản hồi. Chương 6 đi toàn bộ từ giao diện tool đến execution pipeline.
 
-**3. Tasks** (`Task.ts`, `tasks/`). Tasks are background work units -- primarily sub-agents. They follow a state machine: `pending -> running -> completed | failed | killed`. The `AgentTool` spawns a new `query()` generator with its own message history, tool set, and permission mode. Tasks give Claude Code its recursive capability: an agent can delegate to sub-agents, which can delegate further.
+**3. Tasks** (`Task.ts`, `tasks/`). Tasks là các đơn vị công việc chạy nền -- chủ yếu là sub-agents. Chúng đi theo state machine: `pending -> running -> completed | failed | killed`. `AgentTool` spawn một `query()` generator mới với message history, tool set, và permission mode riêng. Tasks trao cho Claude Code khả năng đệ quy: agent có thể ủy quyền cho sub-agent, và sub-agent có thể ủy quyền tiếp.
 
-**4. State** (two layers). The system maintains state at two levels. A mutable singleton (`STATE`) holds ~80 fields of session-level infrastructure: working directory, model configuration, cost tracking, telemetry counters, session ID. It is set once at startup and mutated directly -- no reactivity. A minimal reactive store (34 lines, Zustand-shaped) drives the UI: messages, input mode, tool approvals, progress indicators. The separation is intentional: infrastructure state changes rarely and does not need to trigger re-renders; UI state changes constantly and must. Chapter 3 covers the two-tier architecture in depth.
+**4. State** (hai tầng). Hệ thống giữ state ở hai lớp. Một mutable singleton (`STATE`) chứa khoảng 80 trường hạ tầng cấp session: working directory, model configuration, cost tracking, telemetry counters, session ID. Nó được set một lần lúc startup và mutate trực tiếp -- không reactive. Một reactive store tối giản (34 dòng, hình dạng Zustand) điều khiển UI: messages, input mode, tool approvals, progress indicators. Sự tách lớp này là có chủ đích: state hạ tầng đổi hiếm, không cần re-render; state UI đổi liên tục, bắt buộc phải re-render. Chương 3 phân tích kỹ two-tier architecture này.
 
-**5. Memory** (`memdir/`). The agent's persistent context across sessions. Three tiers: project-level (`CLAUDE.md` files in the repo), user-level (`~/.claude/MEMORY.md`), and team-level (shared via symlinks). At session start, the system scans for all memory files, parses frontmatter, and an LLM selects which memories are relevant to the current conversation. Memory is how Claude Code "remembers" your codebase conventions, architectural decisions, and debugging history.
+**5. Memory** (`memdir/`). Đây là persistent context của agent qua nhiều sessions. Có ba tầng: project-level (`CLAUDE.md` trong repo), user-level (`~/.claude/MEMORY.md`), và team-level (chia sẻ bằng symlinks). Khi session bắt đầu, hệ thống quét toàn bộ memory files, parse frontmatter, rồi một LLM chọn memory nào relevant với cuộc hội thoại hiện tại. Memory là cơ chế để Claude Code "nhớ" conventions của codebase, quyết định kiến trúc, và lịch sử debugging của bạn.
 
-**6. Hooks** (`hooks/`, `utils/hooks/`). User-defined lifecycle interceptors that fire at 27 distinct events across 4 execution types: shell commands, single-shot LLM prompts, multi-turn agent conversations, and HTTP webhooks. Hooks can block tool execution, modify inputs, inject additional context, or short-circuit the entire query loop. The permission system itself is partially implemented through hooks -- `PreToolUse` hooks can deny tool calls before the interactive permission prompt ever fires.
+**6. Hooks** (`hooks/`, `utils/hooks/`). Đây là user-defined lifecycle interceptors, kích hoạt ở 27 events khác nhau trên 4 execution types: shell commands, single-shot LLM prompts, multi-turn agent conversations, và HTTP webhooks. Hooks có thể block tool execution, modify inputs, inject context bổ sung, hoặc short-circuit toàn bộ query loop. Chính permission system cũng một phần được triển khai qua hooks -- `PreToolUse` hooks có thể deny tool calls trước cả khi interactive permission prompt xuất hiện.
 
 ---
 
 ## The Golden Path: From Keystroke to Output
 
-Trace a single request through the system. The user types "add error handling to the login function" and presses Enter.
+Hãy lần theo một request đi xuyên hệ thống. Người dùng gõ "add error handling to the login function" rồi nhấn Enter.
 
 ```mermaid
 sequenceDiagram
@@ -75,21 +75,21 @@ sequenceDiagram
     Q->>Q: Stop check: more tool calls? Continue loop
 ```
 
-Three things to notice about this flow.
+Có ba điểm cần nhìn rõ trong flow này.
 
-First, the query loop is a generator, not a callback chain. The REPL pulls messages from it via `for await`, which means backpressure is natural -- if the UI cannot keep up, the generator pauses. This is a deliberate choice over event emitters or observable streams.
+Thứ nhất, query loop là generator, không phải callback chain. REPL kéo messages từ nó bằng `for await`, nên backpressure diễn ra tự nhiên -- nếu UI không theo kịp, generator sẽ dừng chờ. Đây là lựa chọn có chủ đích thay cho event emitters hoặc observable streams.
 
-Second, tool execution overlaps with model streaming. The `StreamingToolExecutor` does not wait for the model to finish before starting concurrency-safe tools. A `Read` call can complete and return its results while the model is still generating the rest of its response. This is speculative execution -- if the model's final output invalidates the tool call (rare but possible), the result is discarded.
+Thứ hai, tool execution chồng lấp với model streaming. `StreamingToolExecutor` không chờ model phát xong mới chạy concurrency-safe tools. Một `Read` call có thể hoàn tất và trả kết quả trong lúc model còn đang generate phần còn lại. Đây là speculative execution -- nếu output cuối của model khiến tool call đó không còn hợp lệ (hiếm nhưng có), kết quả sẽ bị discard.
 
-Third, the entire loop is re-entrant. When the model makes tool calls, the results are appended to the message history, and the loop calls the model again with the updated context. There is no separate "tool result handling" phase -- it is all one loop. The model decides when it is done by simply not making any more tool calls.
+Thứ ba, toàn bộ loop là re-entrant. Khi model tạo tool calls, kết quả được append vào message history, rồi loop gọi model lại với context đã cập nhật. Không có pha riêng kiểu "xử lý kết quả tool" -- tất cả chỉ là một loop. Model tự quyết định lúc nào xong bằng cách không tạo thêm tool calls nữa.
 
 ---
 
 ## The Permission System
 
-Claude Code runs arbitrary shell commands on your machine. It edits your files. It can spawn sub-processes, make network requests, and modify your git history. Without a permission system, this is a security catastrophe.
+Claude Code có thể chạy shell commands tùy ý trên máy bạn. Nó chỉnh sửa files. Nó có thể spawn sub-processes, gửi network requests, và thay đổi git history. Nếu không có permission system, đó là một thảm họa bảo mật.
 
-The system defines seven permission modes, ordered from most to least permissive:
+Hệ thống định nghĩa bảy permission modes, sắp từ thoáng nhất đến chặt nhất:
 
 | Mode | Behavior |
 |------|----------|
@@ -101,7 +101,7 @@ The system defines seven permission modes, ordered from most to least permissive
 | `plan` | Read-only. All mutations blocked. |
 | `bubble` | Escalate decision to parent agent (sub-agent mode). |
 
-When a tool call needs permission, the resolution follows a strict chain:
+Khi một tool call cần quyền, chuỗi phân giải diễn ra theo thứ tự nghiêm ngặt:
 
 ```mermaid
 flowchart TD
@@ -121,15 +121,15 @@ flowchart TD
     J --> M["User: allow once/session/always or deny"]
 ```
 
-The `auto` mode deserves special attention. It runs a separate, lightweight LLM call that classifies the tool invocation against the conversation transcript. The classifier sees a compact representation of the tool input and decides whether the action is consistent with what the user asked for. This is the mode that lets Claude Code work semi-autonomously -- approving routine operations while flagging anything that looks like it deviates from the user's intent.
+`auto` mode đáng để chú ý riêng. Nó chạy một LLM call nhẹ, tách biệt, để phân loại tool invocation theo transcript hiện tại. Classifier này thấy biểu diễn rút gọn của input tool rồi quyết định hành động đó có phù hợp với yêu cầu người dùng hay không. Đây là mode giúp Claude Code vận hành bán tự trị -- tự duyệt thao tác thường quy, nhưng gắn cờ khi thấy dấu hiệu lệch user intent.
 
-Sub-agents default to `bubble` mode, which means they cannot approve their own dangerous actions. Permission requests propagate up to the parent agent or ultimately to the user. This prevents a sub-agent from silently running destructive commands that the user never saw.
+Sub-agents mặc định ở `bubble` mode, nghĩa là không được tự phê duyệt hành động nguy hiểm của chính chúng. Permission request sẽ được đẩy lên parent agent, rồi cuối cùng tới người dùng nếu cần. Cơ chế này ngăn sub-agent lặng lẽ chạy lệnh phá hủy mà người dùng không biết.
 
 ---
 
 ## Multi-Provider Architecture
 
-Claude Code talks to Claude through four different infrastructure paths, all transparent to the rest of the system.
+Claude Code nói chuyện với Claude qua bốn đường hạ tầng khác nhau, và phần còn lại của hệ thống không cần biết đường nào đang dùng.
 
 ```mermaid
 graph LR
@@ -144,15 +144,15 @@ graph LR
     SDK --> CL["callModel() in query loop"]
 ```
 
-The key insight is that the Anthropic SDK provides wrapper classes for each cloud provider that present the same interface as the direct API client. The `getAnthropicClient()` factory reads environment variables and configuration to determine which provider to use, constructs the appropriate client, and returns it. From that point forward, `callModel()` and every other consumer treats it as a generic Anthropic client.
+Ý chính: Anthropic SDK cung cấp wrapper classes cho từng cloud provider, nhưng tất cả cùng lộ ra một interface giống direct API client. Factory `getAnthropicClient()` đọc environment variables và cấu hình để chọn provider, tạo client tương ứng, rồi trả về. Từ đó trở đi, `callModel()` và mọi caller khác đối xử nó như một Anthropic client chung.
 
-Provider selection is determined at startup and stored in `STATE`. The query loop never checks which provider is active. This means switching from Direct API to Bedrock is a configuration change, not a code change -- the agent loop, tool system, and permission model are entirely provider-agnostic.
+Provider được chọn ở startup và lưu vào `STATE`. Query loop không cần kiểm tra provider nào đang active. Vì thế, đổi từ Direct API sang Bedrock chỉ là đổi cấu hình, không phải đổi code -- agent loop, tool system, và permission model đều provider-agnostic.
 
 ---
 
 ## The Build System
 
-Claude Code ships as both an internal Anthropic tool and a public npm package. The same codebase serves both, with compile-time feature flags controlling what gets included.
+Claude Code được phát hành vừa như internal tool của Anthropic, vừa như public npm package. Một codebase phục vụ cả hai, với compile-time feature flags để quyết định phần nào được include.
 
 ```typescript
 // Conditional imports guarded by feature flags
@@ -161,17 +161,17 @@ const reactiveCompact = feature('REACTIVE_COMPACT')
   : null
 ```
 
-The `feature()` function comes from `bun:bundle`, Bun's built-in bundler API. At build time, each feature flag resolves to a boolean literal. The bundler's dead code elimination then strips the `require()` call entirely when the flag is false -- the module is never loaded, never included in the bundle, and never shipped.
+Hàm `feature()` đến từ `bun:bundle`, bundler API tích hợp sẵn của Bun. Ở build time, mỗi feature flag được resolve thành boolean literal. Sau đó dead code elimination của bundler sẽ xóa hẳn `require()` call nếu cờ là false -- module không được load, không vào bundle, và không được ship.
 
-The pattern is consistent: a top-level `feature()` guard wrapping a `require()` call. The `require()` is used instead of `import` specifically because dynamic `require()` can be fully eliminated by the bundler when the guard is false, while dynamic `import()` cannot (it returns a Promise that the bundler must preserve).
+Pattern này rất nhất quán: một guard `feature()` cấp cao bao quanh `require()` call. `require()` được dùng thay vì `import` vì dynamic `require()` có thể bị bundler loại bỏ hoàn toàn khi guard là false, còn dynamic `import()` thì không (nó trả về Promise mà bundler buộc phải giữ).
 
-There is an irony worth noting. The source maps published with early npm releases contained `sourcesContent` -- the full original TypeScript source, including the internal-only code paths. The feature flags successfully stripped the runtime code but left the source in the maps. This is how the Claude Code source became publicly readable.
+Có một nghịch lý đáng chú ý. Source maps trong các bản npm đầu tiên chứa `sourcesContent` -- toàn bộ TypeScript source gốc, gồm cả các code paths chỉ dùng nội bộ. Feature flags đã loại runtime code thành công, nhưng source vẫn còn trong maps. Đó là cách mã nguồn Claude Code trở nên đọc được công khai.
 
 ---
 
 ## How the Pieces Connect
 
-The six abstractions form a dependency graph:
+Sáu abstractions tạo thành một dependency graph:
 
 ```mermaid
 graph TD
@@ -191,24 +191,24 @@ graph TD
     State -->|AppState: reactive store| REPL
 ```
 
-Memory feeds into the query loop as part of the system prompt. The query loop drives tool execution. Tool results feed back into the query loop as messages. Tasks are recursive query loops with isolated message histories. Hooks intercept the query loop at defined points. State is read and written by everything, with the reactive store bridging to the UI.
+Memory được bơm vào query loop như một phần của system prompt. Query loop điều phối tool execution. Tool results quay ngược vào query loop dưới dạng messages. Tasks là những query loops đệ quy với message histories tách biệt. Hooks chặn loop tại các điểm lifecycle xác định. State được đọc/ghi bởi toàn hệ thống, trong đó reactive store làm cầu nối sang UI.
 
-The circular dependency between the query loop and the tool system is the system's defining characteristic. The model generates tool calls. Tools execute and produce results. Results are appended to the message history. The model sees the results and decides what to do next. This cycle continues until the model stops generating tool calls or an external constraint (token budget, max turns, user abort) terminates it.
+Phụ thuộc vòng giữa query loop và tool system là đặc trưng quan trọng nhất của kiến trúc này. Model sinh tool calls. Tools thực thi và tạo kết quả. Kết quả được thêm vào message history. Model đọc kết quả và quyết định bước kế tiếp. Vòng này chạy cho đến khi model ngừng gọi tool hoặc một ràng buộc bên ngoài (token budget, max turns, user abort) kết thúc nó.
 
-Here is how they connect to the chapters that follow: the golden path from input to output is the thread that runs through the entire book. Chapter 2 traces how the system boots to the point where this path can execute. Chapter 3 explains the two-tier state architecture that the path reads and writes. Chapter 4 covers the API layer that the query loop calls. Each subsequent chapter zooms into one segment of the path you have just seen end-to-end.
+Liên kết với các chương sau như sau: golden path từ input tới output là sợi chỉ xuyên suốt cả sách. Chương 2 theo dõi quá trình bootstrap để hệ thống đi tới điểm có thể chạy luồng này. Chương 3 giải thích two-tier state architecture mà luồng này đọc/ghi. Chương 4 trình bày API layer mà query loop gọi. Các chương còn lại lần lượt zoom vào từng đoạn của luồng end-to-end bạn vừa thấy.
 
 ---
 
 ## Apply This
 
-If you are building an agentic system -- any system where an LLM decides what actions to take at runtime -- here are the patterns from Claude Code's architecture that transfer.
+Nếu bạn đang xây một agentic system -- bất kỳ hệ thống nào mà LLM quyết định hành động tại runtime -- đây là những patterns từ kiến trúc Claude Code có thể chuyển giao trực tiếp.
 
-**The generator loop pattern.** Use an async generator as your agent loop, not callbacks or event emitters. The generator gives you natural backpressure (consumers pull at their own pace), clean cancellation (`.return()` on the generator), and a typed return value for terminal states. The problem it solves: in callback-based agent loops, it is difficult to know when the loop is "done" and why. Generators make termination a first-class part of the type system.
+**The generator loop pattern.** Dùng async generator cho agent loop, không dùng callbacks hay event emitters. Generator cho bạn backpressure tự nhiên (consumer kéo theo tốc độ riêng), hủy tác vụ sạch (`.return()` trên generator), và kiểu trả về rõ cho terminal states. Vấn đề nó giải quyết: ở callback-based agent loops, rất khó biết loop "xong" khi nào và vì sao. Generator biến termination thành thành phần hạng nhất trong type system.
 
-**The self-describing tool interface.** Every tool should declare its own concurrency safety, permission requirements, and rendering behavior. Do not put this logic in a central orchestrator that "knows about" each tool. The problem it solves: a central orchestrator becomes a god object that must be updated every time a tool is added. Self-describing tools scale linearly -- adding tool N+1 requires zero changes to existing code.
+**The self-describing tool interface.** Mỗi tool nên tự khai báo concurrency safety, permission requirements, và rendering behavior. Đừng nhét logic này vào một central orchestrator "biết" từng tool. Vấn đề nó giải quyết: central orchestrator sẽ thành god object, cứ thêm tool mới là phải sửa lõi. Self-describing tools scale tuyến tính -- thêm tool N+1 không cần thay đổi code cũ.
 
-**Separate infrastructure state from reactive state.** Not all state needs to trigger UI updates. Session configuration, cost tracking, and telemetry belong in a plain mutable object. Message history, progress indicators, and approval queues belong in a reactive store. The problem it solves: making everything reactive adds subscription overhead and complexity to state that changes once at startup and is read a thousand times. Two tiers match two access patterns.
+**Separate infrastructure state from reactive state.** Không phải mọi state đều cần kích hoạt UI update. Session configuration, cost tracking, telemetry nên ở một mutable object thường. Message history, progress indicators, approval queues nên ở reactive store. Vấn đề nó giải quyết: làm mọi thứ reactive tạo subscription overhead và tăng độ phức tạp cho loại state chỉ đổi một lần lúc startup nhưng bị đọc cả nghìn lần. Hai tầng là hai access patterns.
 
-**Permission modes, not permission checks.** Define a small set of named modes (plan, default, auto, bypass) and resolve every permission decision through the mode. Do not scatter `if (isAllowed)` checks through tool implementations. The problem it solves: inconsistent permission enforcement. When every tool goes through the same mode-based resolution chain, you can reason about the system's security posture by knowing which mode is active.
+**Permission modes, not permission checks.** Định nghĩa một tập nhỏ named modes (plan, default, auto, bypass) và cho mọi permission decision đi qua mode. Đừng rải `if (isAllowed)` checks trong tool implementations. Vấn đề nó giải quyết: permission enforcement thiếu nhất quán. Khi mọi tool đi qua cùng mode-based resolution chain, bạn có thể suy luận security posture của hệ thống chỉ bằng mode đang active.
 
-**Recursive agent architecture via tasks.** Sub-agents should be new instances of the same agent loop with their own message history, not special-cased code paths. Permission escalation flows upward via `bubble` mode. The problem it solves: sub-agent logic that diverges from the main agent loop, leading to subtle differences in behavior and error handling. If the sub-agent is the same loop, it inherits all the same guarantees.
+**Recursive agent architecture via tasks.** Sub-agents nên là các instance mới của chính agent loop với message history riêng, không phải special-cased code paths. Permission escalation đi lên qua `bubble` mode. Vấn đề nó giải quyết: logic sub-agent lệch khỏi loop chính, dẫn tới khác biệt tinh vi về hành vi và xử lý lỗi. Nếu sub-agent dùng cùng một loop, nó thừa hưởng toàn bộ guarantees tương tự.

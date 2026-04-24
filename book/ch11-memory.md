@@ -1,42 +1,42 @@
-# Chapter 11: Memory -- Learning Across Conversations
+# Chương 11: Memory -- Học qua các cuộc trò chuyện
 
-## The Stateless Problem
+## The Stateless Problem (vấn đề phi trạng thái)
 
-Every chapter so far has described machinery that exists within a single session. The agent loop runs, tools execute, sub-agents coordinate, and when the process exits, all of it vanishes. The next conversation starts with the same system prompt, the same tool definitions, the same model -- and zero knowledge of what happened before.
+Mọi chương cho đến đây đều mô tả các cơ chế tồn tại trong một phiên duy nhất. Vòng lặp agent chạy, tools thực thi, sub-agents phối hợp, và khi tiến trình thoát, toàn bộ những thứ đó biến mất. Cuộc trò chuyện tiếp theo bắt đầu với cùng system prompt, cùng định nghĩa tools, cùng model -- và bằng không kiến thức về những gì đã xảy ra trước đó.
 
-This is the fundamental limitation of a stateless architecture. A developer corrects the model's testing approach on Monday, and on Tuesday the model makes the same mistake. A user explains their role, their project's constraints, their preferences for code style, and every new session requires them to explain it again. The model is not forgetful -- it never knew. Each conversation is an independent universe.
+Đây là giới hạn nền tảng của một kiến trúc stateless. Một developer chỉnh cách model viết test vào thứ Hai, và thứ Ba model lặp lại đúng lỗi đó. Một user giải thích vai trò của họ, các ràng buộc dự án, sở thích code style, và mỗi phiên mới lại buộc họ giải thích lại từ đầu. Model không phải hay quên -- nó chưa từng biết. Mỗi cuộc trò chuyện là một vũ trụ độc lập.
 
-The problem is not theoretical. It manifests in concrete ways that erode trust. A user says "remember, we use real database instances in tests, not mocks" -- and next week the model generates mocked tests. A user explains they are a senior engineer who does not need beginner explanations -- and the next session opens with a tutorial-level walkthrough. Without memory, every session starts at zero. The agent is perpetually a new hire on their first day.
+Vấn đề này không chỉ là lý thuyết. Nó bộc lộ theo những cách cụ thể làm bào mòn niềm tin. User nói "remember, we use real database instances in tests, not mocks" -- và tuần sau model vẫn sinh test dùng mocks. User giải thích họ là senior engineer, không cần giải thích nhập môn -- và phiên kế tiếp lại mở bằng một walkthrough cấp tutorial. Không có memory, mọi phiên đều bắt đầu từ 0. Agent vĩnh viễn là nhân viên mới ngày đầu đi làm.
 
-The standard solution in the industry is Retrieval-Augmented Generation (RAG): embed documents into vectors, store them in a vector database, and retrieve relevant chunks at query time. This works well for knowledge bases -- documentation, FAQs, reference material. But it is architecturally mismatched for what an agent actually needs to remember across sessions. An agent's memory is not a knowledge base. It is a collection of observations: who the user is, what they have corrected, what the project's current constraints are, where to find things. These observations are small, change frequently, and must be human-editable. A vector database solves the wrong problem.
+Lời giải chuẩn trong ngành là Retrieval-Augmented Generation (RAG) (tạo sinh tăng cường truy hồi): nhúng tài liệu thành vector, lưu vào vector database, rồi truy hồi các đoạn liên quan tại thời điểm query. Cách này hoạt động tốt cho knowledge base -- tài liệu, FAQ, tài liệu tham chiếu. Nhưng về mặt kiến trúc, nó lệch với thứ một agent thực sự cần nhớ xuyên phiên. Memory của agent không phải knowledge base. Nó là tập hợp quan sát: user là ai, họ đã sửa gì, các ràng buộc hiện tại của dự án là gì, nên tìm thông tin ở đâu. Những quan sát này nhỏ, đổi thường xuyên, và phải để con người sửa trực tiếp được. Vector database giải đúng một bài toán khác.
 
-Claude Code's memory system is a different bet entirely: files on disk, Markdown format, LLM-powered recall, no infrastructure. The bet is that simplicity in storage, combined with intelligence in retrieval, produces a better system than sophistication in both.
+Hệ thống memory của Claude Code đặt một cược hoàn toàn khác: file trên đĩa, định dạng Markdown, recall do LLM đảm nhiệm, không cần hạ tầng. Cược ở đây là: lưu trữ đơn giản kết hợp truy hồi thông minh sẽ cho hệ tốt hơn so với việc cả hai phía đều phức tạp.
 
-The design philosophy has consequences that shape the entire system:
+Triết lý thiết kế này tạo ra các hệ quả định hình toàn bộ hệ thống:
 
-- **Human-readable.** A user who wants to see what Claude Code remembers can open `~/.claude/projects/<slug>/memory/MEMORY.md` in any text editor. No special tools, no decryption, no export command.
-- **Human-editable.** A stale memory can be corrected with vim. A wrong memory can be deleted with `rm`. The user has full agency over the agent's knowledge.
-- **Version-controllable.** Team memories can be committed to git. Memory changes diff cleanly because they are Markdown.
-- **Zero infrastructure.** The memory system works offline, works without a server, works on any OS that has a filesystem. There is no migration path because there is no schema.
-- **Debuggable.** When memory behaves unexpectedly, the diagnosis path is `ls` and `cat`, not query logs and database inspection.
+- **Human-readable.** User muốn biết Claude Code nhớ gì chỉ cần mở `~/.claude/projects/<slug>/memory/MEMORY.md` bằng bất kỳ text editor nào. Không cần tool đặc biệt, không cần giải mã, không cần lệnh export.
+- **Human-editable.** Memory đã cũ có thể sửa bằng vim. Memory sai có thể xóa bằng `rm`. User có toàn quyền với tri thức của agent.
+- **Version-controllable.** Team memories có thể commit vào git. Thay đổi memory diff rất sạch vì chúng là Markdown.
+- **Zero infrastructure.** Hệ memory chạy offline, chạy không cần server, chạy trên mọi OS có filesystem. Không có đường migration vì không có schema.
+- **Debuggable.** Khi memory hành xử bất ngờ, đường chẩn đoán là `ls` và `cat`, không phải query logs hay soi database.
 
-The model both reads and writes memories using `FileWriteTool` and `FileEditTool` -- the same tools it uses to edit source code (introduced in Chapter 6). No special memory API exists. The system prompt teaches the model a two-step write protocol (create file, update index), and the model executes it with its existing capabilities under new instructions. This is tool reuse as architectural principle -- the memory system is not a subsystem bolted onto the agent, it is an emergent behavior of the agent using its existing capabilities.
+Model vừa đọc vừa ghi memory bằng `FileWriteTool` và `FileEditTool` -- chính những tool nó dùng để sửa source code (đã giới thiệu ở Chapter 6). Không có memory API riêng. System prompt dạy model một giao thức ghi hai bước (tạo file, cập nhật index), và model thực thi bằng năng lực sẵn có dưới tập chỉ dẫn mới. Đây là tái sử dụng tool như một nguyên lý kiến trúc -- hệ memory không phải một subsystem gắn thêm vào agent, mà là hành vi nổi lên từ chính các năng lực hiện có của agent.
 
-There is a deeper reason the file-based choice works here. Memory, for an AI agent, is fundamentally different from memory in a traditional application. A traditional application's database holds authoritative state -- the source of truth for the system's data. An agent's memory holds *observations* -- things that were true at a point in time and may or may not still be true. Files communicate this epistemological status naturally. They have modification times that reveal when the observation was recorded. They can be read, edited, and deleted by humans who know the observation is wrong. A database suggests permanence and authority; a Markdown file suggests a note that someone wrote down and might need to update. The storage medium communicates the nature of the data -- these are working notes, not gospel.
+Có một lý do sâu hơn khiến lựa chọn file-based phù hợp ở đây. Memory, với AI agent, khác căn bản memory trong ứng dụng truyền thống. Database của ứng dụng truyền thống giữ authoritative state -- source of truth cho dữ liệu hệ thống. Memory của agent giữ *observations* -- những điều đúng ở một thời điểm và có thể còn đúng hoặc không. File truyền đạt đúng bản chất nhận thức đó một cách tự nhiên. Chúng có thời điểm sửa đổi cho biết quan sát được ghi khi nào. Chúng có thể được con người đọc, sửa, xóa khi biết quan sát đó sai. Database gợi tính vĩnh cửu và thẩm quyền; Markdown file gợi một ghi chú ai đó viết ra và có thể cần cập nhật. Môi trường lưu trữ tự nói lên bản chất dữ liệu -- đây là working notes, không phải chân lý bất biến.
 
-### Per-Project Scoping
+### Per-Project Scoping (phạm vi theo từng dự án)
 
-Memory is scoped to the git repository root, not the working directory. If a user opens a terminal in `src/components/` and another in `tests/`, both sessions share the same memory directory. The resolution logic finds the canonical git root first, falling back to the project root:
+Memory được scope theo git repository root, không theo working directory. Nếu user mở terminal ở `src/components/` và một terminal khác ở `tests/`, cả hai phiên dùng chung một memory directory. Logic resolution tìm canonical git root trước, rồi mới fallback về project root:
 
 The base path resolution finds the canonical git root first, falling back to the project root. This ensures all git worktrees of the same repository share a single memory directory.
 
-The `findCanonicalGitRoot` call ensures that all git worktrees of the same repository share a single memory directory. The git root is sanitized (slashes become dashes, via `sanitizePath()`) to produce a flat directory name:
+Lời gọi `findCanonicalGitRoot` đảm bảo tất cả git worktrees của cùng repository dùng chung một memory directory. Git root được sanitize (slash đổi thành dấu gạch ngang, qua `sanitizePath()`) để tạo tên thư mục phẳng:
 
 ```
 ~/.claude/projects/-Users-alex-code-myapp/memory/
 ```
 
-A fully populated memory directory reveals the system's structure:
+Một memory directory được điền đầy đủ sẽ bộc lộ cấu trúc hệ thống:
 
 ```mermaid
 graph LR
@@ -62,37 +62,37 @@ graph LR
     MEMORY -->|"on-demand"| RR
 ```
 
-The naming convention is semantic: `<type>_<topic>.md`. The type prefix is not enforced by code but is part of the prompt's instructions, making it easy to visually scan the directory and understand the memory landscape.
+Quy ước đặt tên mang tính ngữ nghĩa: `<type>_<topic>.md`. Prefix `type` không bị code ép buộc, nhưng nằm trong chỉ dẫn prompt, giúp bạn quét thư mục bằng mắt và hiểu ngay landscape của memory.
 
 ---
 
-## The Four-Type Taxonomy
+## The Four-Type Taxonomy (phân loại bốn kiểu)
 
-Not everything is worth remembering. The memory system constrains all memories to exactly four types:
+Không phải thứ gì cũng đáng để nhớ. Hệ memory giới hạn mọi memory vào đúng bốn loại:
 
-The four types are: **user**, **feedback**, **project**, and **reference**.
+Bốn loại đó là: **user**, **feedback**, **project**, và **reference**.
 
-The taxonomy is designed around a single criterion: **is this knowledge derivable from the current project state?** Code patterns, architecture, file structure, git history -- all of these can be re-derived by reading the codebase. They are excluded. The four types capture what cannot be re-derived.
+Taxonomy được thiết kế quanh một tiêu chí duy nhất: **tri thức này có thể suy ra lại từ trạng thái dự án hiện tại hay không?** Code patterns, architecture, file structure, git history -- tất cả đều có thể suy ra lại bằng cách đọc codebase. Chúng bị loại trừ. Bốn loại trên nắm lấy phần không thể suy ra lại.
 
-**User memories** record information about the person: their role, goals, responsibilities, expertise level. A senior Go engineer who is new to React gets different explanations than a first-time programmer.
+**User memories** ghi thông tin về con người: vai trò, mục tiêu, trách nhiệm, mức độ chuyên môn. Một senior Go engineer mới học React cần dạng giải thích khác với người mới lập trình lần đầu.
 
-**Feedback memories** capture guidance about how to approach work -- both corrections and confirmations. The system explicitly instructs the model to record both: "if you only save corrections, you will drift away from approaches the user has already validated." Each feedback memory has a specific structure: the rule itself, then a `**Why:**` line with the reason (often a past incident), then a `**How to apply:**` line with the trigger conditions.
+**Feedback memories** ghi hướng dẫn về cách làm việc -- gồm cả correction lẫn confirmation. Hệ thống dặn model phải ghi cả hai: "if you only save corrections, you will drift away from approaches the user has already validated." Mỗi feedback memory có cấu trúc cụ thể: rule, rồi dòng `**Why:**` với lý do (thường là một sự cố đã từng xảy ra), rồi dòng `**How to apply:**` với các điều kiện kích hoạt.
 
-**Project memories** record ongoing work context -- who is doing what, why, by when. The prompt emphasizes converting relative dates to absolute: "Thursday" becomes "2026-03-05" so the memory remains interpretable weeks later.
+**Project memories** ghi bối cảnh công việc đang diễn ra -- ai làm gì, vì sao, trước hạn nào. Prompt nhấn mạnh việc đổi ngày tương đối thành ngày tuyệt đối: "Thursday" thành "2026-03-05" để memory vẫn diễn giải được sau nhiều tuần.
 
-**Reference memories** are bookmarks -- pointers to where information lives in external systems. A Linear project URL, a Grafana dashboard, a Slack channel. These tell the model where to look, not what to find.
+**Reference memories** là bookmark -- con trỏ tới nơi thông tin nằm trong hệ thống bên ngoài. Một URL dự án Linear, một dashboard Grafana, một kênh Slack. Chúng nói cho model biết nên tìm ở đâu, không phải sẽ tìm thấy gì.
 
 ### The Taxonomy as Filter
 
-The four types are not just categories -- they are a filter. By defining exactly what counts as a memory, the system implicitly defines what does not. Without the taxonomy, an eager model would save everything: code patterns, architecture diagrams, error messages. All derivable from the codebase. Saving it creates a parallel, potentially stale copy of information that is better sourced from its origin.
+Bốn loại này không chỉ là category -- chúng là một bộ lọc. Bằng việc định nghĩa chính xác thứ gì được tính là memory, hệ thống ngầm định luôn thứ gì không phải. Không có taxonomy, model háo hức sẽ lưu mọi thứ: code patterns, architecture diagrams, error messages. Tất cả đều có thể suy ra từ codebase. Lưu chúng tạo ra một bản sao song song, có thể stale, cho thông tin vốn nên lấy từ nguồn gốc.
 
-The taxonomy also prevents a subtler failure: memory as crutch. If the model saves architectural decisions as memories, it stops reading the codebase to understand architecture. By excluding derivable information, the system forces the model to stay grounded in the current state of the code.
+Taxonomy cũng ngăn một thất bại tinh vi hơn: dùng memory như nạng. Nếu model lưu các quyết định kiến trúc thành memory, nó sẽ ngừng đọc codebase để hiểu kiến trúc. Bằng cách loại trừ thông tin có thể suy ra, hệ thống buộc model phải bám sát trạng thái hiện tại của code.
 
-The exclusion list is explicit: code patterns, git history, debugging solutions, anything in CLAUDE.md, ephemeral task details. These exclusions apply even when the user explicitly asks to save. If a user says "remember this PR list," the model is instructed to push back -- "what was *surprising* or *non-obvious* about it?" That surprising part is worth keeping. The raw list is not. This instruction was validated through evals, going from 0/2 to 3/3 when the exclusion-override instruction was added.
+Danh sách loại trừ là tường minh: code patterns, git history, debugging solutions, bất cứ gì trong CLAUDE.md, và chi tiết tác vụ ngắn hạn. Các loại trừ này áp dụng cả khi user yêu cầu lưu rõ ràng. Nếu user nói "remember this PR list," model được chỉ dẫn phản biện lại -- "what was *surprising* or *non-obvious* about it?" Phần bất ngờ đó đáng lưu. Danh sách thô thì không. Chỉ dẫn này được kiểm chứng qua evals, từ 0/2 lên 3/3 khi thêm chỉ dẫn override loại trừ.
 
 ### Frontmatter as Contract
 
-Every memory file uses YAML frontmatter with three required fields:
+Mỗi memory file dùng YAML frontmatter với ba trường bắt buộc:
 
 ```markdown
 ---
@@ -102,17 +102,17 @@ type: {{user, feedback, project, reference}}
 ---
 ```
 
-The `description` is the most load-bearing field. It is what the relevance selector (a Sonnet side-query, discussed below) uses to decide whether to surface this memory. A vague description like "testing stuff" will either match too broadly or fail to match at all. A specific description like "Integration tests must hit real DB, not mocks -- burned by mock divergence Q4" matches exactly the conversations where it matters. The description is the memory's search index -- consumed not by a search engine but by a language model that can understand nuance, context, and intent.
+`description` là trường chịu tải lớn nhất. Đây là thứ relevance selector (một Sonnet side-query, sẽ bàn bên dưới) dùng để quyết định có nên đưa memory này lên hay không. Mô tả mơ hồ như "testing stuff" sẽ hoặc match quá rộng, hoặc không match gì cả. Mô tả cụ thể như "Integration tests must hit real DB, not mocks -- burned by mock divergence Q4" match chính xác đúng những cuộc trò chuyện cần nó. Description là search index của memory -- được tiêu thụ không phải bởi search engine, mà bởi language model có thể hiểu nuance, context và intent.
 
-The frontmatter is also the only part of the file that the scanning system reads during recall. `scanMemoryFiles()` reads each file only to its first 30 lines to extract the header. The body is private until the file is explicitly selected and loaded.
+Frontmatter cũng là phần duy nhất của file mà hệ scanning đọc trong lúc recall. `scanMemoryFiles()` chỉ đọc mỗi file tới 30 dòng đầu để trích header. Phần body là riêng tư cho đến khi file được chọn và nạp một cách tường minh.
 
 ---
 
 ## The Write Path
 
-Writing a memory is a two-step process executed with standard file tools.
+Ghi một memory là quy trình hai bước, thực thi bằng các file tools chuẩn.
 
-**Step 1: Write the memory file.** The model creates a `.md` file in the memory directory with YAML frontmatter:
+**Step 1: Write the memory file.** Model tạo một file `.md` trong memory directory với YAML frontmatter:
 
 ```markdown
 ---
@@ -130,23 +130,23 @@ queries hit edge cases the mocks didn't cover.
 operations should use the real PGlite instance from test-utils.
 ```
 
-**Step 2: Update the index.** The model adds a one-line pointer to `MEMORY.md`:
+**Step 2: Update the index.** Model thêm một dòng con trỏ vào `MEMORY.md`:
 
 ```markdown
 - [Testing Policy](feedback_testing.md) -- integration tests must hit real DB
 ```
 
-Each entry must stay under approximately 150 characters. The index is a table of contents, not a knowledge base.
+Mỗi entry phải giữ dưới khoảng 150 ký tự. Index là mục lục, không phải knowledge base.
 
-When the model learns new information that modifies an existing memory, it uses `FileEditTool` to update the existing file rather than creating a duplicate. The system does not version memories internally -- the file is on the local filesystem, and the user has `git` if they want versioning. Before the prompt is built, `ensureMemoryDirExists()` creates the memory directory, and the prompt tells the model the directory already exists, avoiding wasted turns on `ls` and `mkdir -p`.
+Khi model học thông tin mới làm thay đổi một memory đã có, nó dùng `FileEditTool` để cập nhật file hiện hữu thay vì tạo bản trùng lặp. Hệ thống không version memory nội bộ -- file nằm trên local filesystem, và user có `git` nếu muốn versioning. Trước khi prompt được dựng, `ensureMemoryDirExists()` tạo memory directory, và prompt nói rõ thư mục đã tồn tại, tránh lãng phí lượt cho `ls` và `mkdir -p`.
 
 ---
 
 ## The Recall Path
 
-Writing memories is necessary but not sufficient. The harder problem is retrieval: given a user's query, which of the potentially hundreds of memory files should be loaded into the model's context? Loading all of them would exhaust the token budget. Loading none would defeat the purpose. Loading the wrong ones would waste tokens on irrelevant information while missing the knowledge that would have changed the model's behavior.
+Ghi memory là cần thiết nhưng chưa đủ. Bài toán khó hơn là retrieval: với query của user, file memory nào trong hàng trăm file tiềm năng cần được nạp vào context của model? Nạp tất cả sẽ đốt hết token budget. Không nạp file nào thì mất mục đích. Nạp sai file thì vừa tốn token cho thông tin không liên quan vừa bỏ sót tri thức đáng ra đã đổi hành vi của model.
 
-The recall system operates in two tiers. The `MEMORY.md` index is always loaded into context at session start, providing orientation. Individual memory files are surfaced on-demand through an LLM-powered relevance query that selects up to five memories per turn.
+Hệ recall chạy theo hai tầng. Index `MEMORY.md` luôn được nạp vào context khi bắt đầu phiên để định hướng. Các file memory riêng lẻ được đưa lên on-demand qua một relevance query do LLM điều khiển, chọn tối đa năm memory mỗi lượt.
 
 ### The Full Recall Pipeline
 
@@ -166,79 +166,79 @@ flowchart TD
     style F fill:#fff3e0
 ```
 
-The async prefetch in step 2 is the key performance decision. By the time the main model reaches a point where recalled context would be useful, the side-query has usually already completed. The user experiences no additional latency.
+Async prefetch ở bước 2 là quyết định hiệu năng then chốt. Đến lúc model chính đi đến điểm mà ngữ cảnh recall trở nên hữu ích, side-query thường đã xong. User không cảm nhận thêm độ trễ.
 
 ### The Sonnet Side-Query
 
-The manifest is sent to a Sonnet model as a side-query. The system prompt for this selector is precise:
+Manifest được gửi tới model Sonnet dưới dạng side-query. System prompt cho selector này rất chặt:
 
-The system prompt for the selector instructs it to be conservative: include only memories that will be useful for the current query, skip memories if uncertain, and avoid selecting API/usage documentation for tools already in active use (since the model already has those tools loaded) -- but still surface warnings, gotchas, or known issues about those tools.
+System prompt cho selector chỉ dẫn nó phải bảo thủ: chỉ đưa vào những memory hữu ích cho query hiện tại, bỏ qua memory nếu không chắc, và tránh chọn tài liệu API/usage cho tools đang được dùng tích cực (vì model đã nạp các tools đó rồi) -- nhưng vẫn đưa lên các warnings, gotchas, hoặc known issues về những tools đó.
 
-The response uses structured output -- `{ selected_memories: string[] }` -- and filenames are validated against the known set.
+Phản hồi dùng structured output -- `{ selected_memories: string[] }` -- và filenames được kiểm tra đối chiếu với tập tên đã biết.
 
-This approach trades latency for precision, and the tradeoff analysis is instructive. **Keyword matching** would be fast but has no understanding of context -- it cannot express "do not select memories for tools already in active use." **Embedding similarity** handles semantic matching but introduces infrastructure (embedding model, vector store, update pipeline) and struggles with negation -- the embedding of "do NOT use database mocks" is very close to "use database mocks." **The Sonnet side-query** understands semantic relevance, reasons about context, handles negation, and requires zero infrastructure. The latency cost is bounded (hundreds of milliseconds) and hidden behind the main model's initial processing.
+Cách tiếp cận này đổi latency lấy precision, và phân tích tradeoff rất đáng học. **Keyword matching** nhanh nhưng không hiểu ngữ cảnh -- nó không diễn đạt được điều kiện kiểu "do not select memories for tools already in active use." **Embedding similarity** xử lý semantic matching nhưng kéo theo hạ tầng (embedding model, vector store, update pipeline) và xử lý phủ định kém -- embedding của "do NOT use database mocks" rất gần "use database mocks." **The Sonnet side-query** hiểu semantic relevance, suy luận theo ngữ cảnh, xử lý phủ định, và không cần hạ tầng. Chi phí latency có thật (vài trăm mili-giây) nhưng bị che phía sau giai đoạn xử lý ban đầu của model chính.
 
-The telemetry system tracks selection rates even when no memories are selected. A selection rate of 0/150 means something different from 0/3 -- the first indicates a precision problem, the second a coverage problem.
+Hệ telemetry theo dõi selection rates ngay cả khi không memory nào được chọn. Selection rate 0/150 khác hẳn 0/3 -- trường hợp đầu cho thấy vấn đề precision, trường hợp sau cho thấy vấn đề coverage.
 
 ---
 
 ## Staleness
 
-The staleness system addresses a failure mode that emerged from real usage. Users reported that old memories -- containing file:line citations to code that had since changed -- were being asserted as fact by the model. The citation made the stale claim sound *more* authoritative, not less.
+Hệ staleness xử lý một failure mode lộ ra từ usage thực tế. User báo rằng các memory cũ -- chứa trích dẫn file:line tới code đã đổi từ lâu -- vẫn bị model khẳng định như sự thật. Trích dẫn khiến tuyên bố stale nghe *có thẩm quyền hơn*, không phải ít đi.
 
-The solution is not expiration. Old memories are not deleted -- they may contain institutional knowledge valid for years. Instead, the system attaches age warnings:
+Giải pháp không phải expiration. Memory cũ không bị xóa -- chúng có thể chứa institutional knowledge còn giá trị nhiều năm. Thay vào đó, hệ thống gắn age warnings:
 
-The staleness function computes the memory's age in days. Memories from today or yesterday get no warning (the function returns an empty string). Everything older gets a caveat injected alongside the memory content: a message stating the age in days and warning that code behavior claims or file:line citations may be outdated, advising verification against current code.
+Hàm staleness tính tuổi của memory theo ngày. Memory từ hôm nay hoặc hôm qua thì không có cảnh báo (hàm trả chuỗi rỗng). Mọi thứ cũ hơn sẽ được chèn caveat kèm nội dung memory: thông điệp nêu tuổi theo ngày và cảnh báo rằng các khẳng định về hành vi code hoặc trích dẫn file:line có thể đã lỗi thời, khuyên phải kiểm chứng với code hiện tại.
 
-Memories from today or yesterday get no warning. Everything older gets a staleness caveat injected alongside the memory content. The human-readable format -- "today," "yesterday," "47 days ago" -- exists because models are poor at date arithmetic. A raw ISO timestamp does not trigger staleness reasoning the way "47 days ago" does. This is an empirical observation about model behavior, validated through evals: the action-cue framing "Before recommending from memory" scored 3/3 versus 0/3 for the more abstract "Trusting what you recall," with identical body text.
+Memory từ hôm nay hoặc hôm qua không có cảnh báo. Mọi thứ cũ hơn đều được gắn caveat staleness cạnh nội dung memory. Định dạng dễ đọc cho người -- "today," "yesterday," "47 days ago" -- tồn tại vì model làm date arithmetic không tốt. ISO timestamp thô không kích hoạt suy luận về độ cũ theo cách "47 days ago" làm được. Đây là quan sát thực nghiệm về hành vi model, được xác nhận qua evals: framing dạng action-cue "Before recommending from memory" đạt 3/3 so với 0/3 cho framing trừu tượng hơn "Trusting what you recall," dù phần thân giống hệt.
 
-There is a philosophical tension worth naming. The staleness system treats memories as hypotheses, not facts. But the model's natural tendency is to present information confidently. The staleness warning is fighting the model's own voice -- using its instruction-following capability to override its confidence-generation tendency.
+Có một căng thẳng mang tính triết học đáng gọi tên. Hệ staleness xem memory là giả thuyết, không phải sự kiện. Nhưng xu hướng tự nhiên của model là trình bày thông tin một cách tự tin. Cảnh báo staleness đang chống lại chính giọng điệu của model -- dùng khả năng tuân thủ chỉ dẫn để ghi đè xu hướng tạo tự tin.
 
 ---
 
 ## MEMORY.md as the Always-Loaded Index
 
-Every conversation begins with `MEMORY.md` in context. It is not a memory -- it is an index, a table of contents for the actual memory files.
+Mọi cuộc trò chuyện đều bắt đầu với `MEMORY.md` trong context. Nó không phải memory -- nó là index, mục lục cho các file memory thực sự.
 
-The index has two hard caps:
+Index có hai hard caps:
 
-The index has two hard caps: 200 lines and 25,000 bytes.
+Index có hai hard caps: 200 lines và 25,000 bytes.
 
-The 200-line cap catches normal growth. The 25KB byte cap catches an observed failure mode: users packing long lines that stay under 200 lines but consume enormous token budgets. At the 97th percentile, a MEMORY.md with only 197 lines weighed 197KB. When either cap fires, actionable guidance tells the user what to fix: "Keep index entries to one line under ~200 chars; move detail into topic files."
+Mốc 200 dòng bắt tăng trưởng bình thường. Mốc 25KB theo byte bắt một failure mode từng quan sát: user nhồi các dòng rất dài khiến file vẫn dưới 200 dòng nhưng ngốn token budget khổng lồ. Ở phân vị 97, một MEMORY.md chỉ 197 dòng nặng tới 197KB. Khi một trong hai mốc kích hoạt, hệ thống đưa guidance có thể hành động: "Keep index entries to one line under ~200 chars; move detail into topic files."
 
-This two-tier architecture -- lightweight always-on index plus heavy on-demand content -- is the design that allows memory to scale. A project with 150 memories has a 150-line index consuming perhaps 3,000 tokens, not 150 full files consuming 100,000.
+Kiến trúc hai tầng này -- index luôn bật nhẹ cân cộng với nội dung nặng tải theo nhu cầu -- là thiết kế giúp memory scale. Dự án có 150 memories sẽ có index 150 dòng tiêu tốn khoảng 3,000 tokens, không phải 150 file đầy đủ tiêu tốn 100,000.
 
 ---
 
-The transition from individual memory to shared knowledge is natural. A testing policy, a deployment convention, a known gotcha in the build system -- these need to be shared across a team.
+Chuyển từ memory cá nhân sang tri thức chia sẻ là bước đi tự nhiên. Một chính sách testing, một quy ước deployment, một gotcha đã biết trong build system -- các thứ này cần chia sẻ cho cả team.
 
 ## Team Memory
 
-Team memory is a subdirectory of the auto-memory directory at `<autoMemPath>/team/`, gated behind a feature flag and requiring auto-memory to be enabled. The architectural nesting is deliberate: disabling auto-memory transitively disables team memory.
+Team memory là thư mục con của auto-memory directory tại `<autoMemPath>/team/`, bị gate bởi feature flag và yêu cầu auto-memory đang bật. Cách lồng kiến trúc này có chủ ý: tắt auto-memory sẽ tắt theo kiểu bắc cầu cả team memory.
 
 ### Defense in Depth
 
-Team memory introduces an attack surface that individual memory does not have. Team-synced files come from other users, and a malicious teammate could attempt path traversal. The security model uses three layers of defense.
+Team memory tạo ra một bề mặt tấn công mà memory cá nhân không có. File đồng bộ theo team đến từ user khác, và một teammate độc hại có thể thử path traversal. Security model dùng ba lớp phòng thủ.
 
-**Layer 1: Input sanitization.** The `sanitizePathKey()` function validates against null bytes, URL-encoded traversals (`%2e%2e%2f`), Unicode normalization attacks (fullwidth characters that normalize to `../`), backslashes, and absolute paths.
+**Layer 1: Input sanitization.** Hàm `sanitizePathKey()` kiểm tra null bytes, URL-encoded traversals (`%2e%2e%2f`), tấn công Unicode normalization (ký tự fullwidth chuẩn hóa thành `../`), backslashes, và absolute paths.
 
-**Layer 2: String-level path validation.** After sanitization, `path.resolve()` normalizes remaining `..` segments, and the resolved path is checked against the team directory prefix (including a trailing separator to prevent `team-evil/` from matching `team/`).
+**Layer 2: String-level path validation.** Sau khi sanitize, `path.resolve()` chuẩn hóa các đoạn `..` còn lại, và đường dẫn đã resolve được đối chiếu với prefix thư mục team (kèm trailing separator để ngăn `team-evil/` khớp với `team/`).
 
-**Layer 3: Symlink resolution.** `realpathDeepestExisting()` resolves symlinks on the deepest existing ancestor, catching attacks that string-level validation cannot detect. If `team/evil` is a symlink pointing to `/etc/`, string validation sees a valid prefix, but `realpath` reveals the true target.
+**Layer 3: Symlink resolution.** `realpathDeepestExisting()` resolve symlinks tại tổ tiên sâu nhất đang tồn tại, bắt các đòn tấn công mà kiểm tra chuỗi không phát hiện được. Nếu `team/evil` là symlink trỏ tới `/etc/`, kiểm tra chuỗi thấy prefix hợp lệ, nhưng `realpath` lộ mục tiêu thật.
 
-All validation failures produce a `PathTraversalError`. No partial successes, no fallbacks. Fail closed.
+Mọi lỗi validation đều sinh `PathTraversalError`. Không thành công một phần, không fallback. Fail closed.
 
 ### Scope Guidance
 
-The prompt teaches the model about private vs. shared memory. User memories are always private. Reference memories are usually team. Feedback memories default to private unless they represent project-wide conventions. The cross-checking instruction -- "Before saving a private feedback memory, check that it does not contradict a team feedback memory" -- prevents conflicting guidance from surfacing unpredictably depending on which memory is recalled first.
+Prompt dạy model phân biệt memory riêng tư và memory chia sẻ. User memories luôn riêng tư. Reference memories thường là của team. Feedback memories mặc định riêng tư trừ khi chúng là quy ước toàn dự án. Chỉ dẫn cross-check -- "Before saving a private feedback memory, check that it does not contradict a team feedback memory" -- ngăn việc guidance mâu thuẫn xuất hiện khó đoán tùy file nào được recall trước.
 
 ---
 
 ## KAIROS Mode: Append-Only Daily Logs
 
-Standard memory assumes discrete sessions. KAIROS mode (Claude Code's assistant mode) breaks this assumption -- sessions are long-lived, potentially running for days. The two-step write pattern does not scale to continuous operation.
+Memory chuẩn giả định các phiên rời rạc. KAIROS mode (assistant mode của Claude Code) phá giả định này -- phiên kéo dài, có thể chạy nhiều ngày. Mẫu ghi hai bước không scale cho vận hành liên tục.
 
-The solution is architectural separation between capture and consolidation:
+Giải pháp là tách kiến trúc giữa capture và consolidation:
 
 ```mermaid
 graph LR
@@ -257,64 +257,64 @@ graph LR
     style B3 fill:#fff9c4
 ```
 
-In KAIROS mode, the model appends to date-named log files (`<autoMemPath>/logs/YYYY/MM/YYYY-MM-DD.md`). Each entry is a short timestamped bullet. The model is instructed: "Do not rewrite or reorganize the log" -- restructuring during capture loses the chronological signal that consolidation needs.
+Trong KAIROS mode, model append vào file log đặt tên theo ngày (`<autoMemPath>/logs/YYYY/MM/YYYY-MM-DD.md`). Mỗi entry là một bullet ngắn có timestamp. Model được chỉ dẫn: "Do not rewrite or reorganize the log" -- tái cấu trúc trong lúc capture làm mất tín hiệu thứ tự thời gian mà consolidation cần.
 
-The path in the prompt is described as a *pattern* rather than today's literal date. This is a caching optimization: the memory prompt is cached and not invalidated when the date changes at midnight. The model derives the current date from a separate `date_change` attachment.
+Đường dẫn trong prompt được mô tả như một *pattern* thay vì ngày cụ thể hôm nay. Đây là tối ưu caching: memory prompt được cache và không bị vô hiệu khi ngày đổi lúc nửa đêm. Model suy ra ngày hiện tại từ attachment `date_change` riêng.
 
 ### The /dream Consolidation
 
-Consolidation runs in four phases: **Orient** (list directory, read index, skim existing files), **Gather** (search logs, check for drifted memories), **Consolidate** (write or update files, merge rather than duplicate), **Prune** (update index under 200 lines, remove stale pointers). The emphasis on merging into existing files rather than creating new ones is important -- without it, the memory directory would grow linearly with usage.
+Consolidation chạy qua bốn pha: **Orient** (liệt kê thư mục, đọc index, lướt file hiện có), **Gather** (tìm trong logs, kiểm tra memory bị drift), **Consolidate** (ghi hoặc cập nhật file, merge thay vì duplicate), **Prune** (cập nhật index dưới 200 dòng, gỡ con trỏ stale). Việc nhấn mạnh merge vào file hiện có thay vì tạo file mới rất quan trọng -- nếu không, memory directory sẽ phình tuyến tính theo usage.
 
 ### The Consolidation Lock
 
-The lock file `.consolidate-lock` serves dual purpose: its content is the holder's PID (mutual exclusion), its mtime *is* `lastConsolidatedAt` (scheduling state). The auto-dream fires when three gates pass, evaluated cheapest-first: hours since last consolidation exceeds 24, sessions modified since then exceeds 5, and no other process holds the lock. Crash recovery detects dead PIDs via `process.kill(pid, 0)`, with a one-hour staleness timeout as defense against PID reuse.
+File lock `.consolidate-lock` có hai vai trò: nội dung là PID của holder (mutual exclusion), còn mtime *chính là* `lastConsolidatedAt` (trạng thái scheduling). Auto-dream chạy khi ba gate cùng qua, theo thứ tự rẻ nhất trước: số giờ từ lần consolidation trước vượt 24, số phiên bị sửa đổi kể từ đó vượt 5, và không có tiến trình khác giữ lock. Cơ chế crash recovery phát hiện PID chết qua `process.kill(pid, 0)`, kèm timeout stale một giờ để phòng PID reuse.
 
 ---
 
 ## Background Extraction
 
-The main agent has full instructions for writing memories proactively. But agents are imperfect -- and the imperfection is predictable. When a user says "remember to always use integration tests" and then immediately asks "now fix the login bug," the model's attention shifts entirely to the bug. The memory-saving instruction was processed but may not execute.
+Agent chính có đầy đủ chỉ dẫn để chủ động ghi memory. Nhưng agent không hoàn hảo -- và kiểu thiếu sót có thể dự đoán được. Khi user nói "remember to always use integration tests" rồi ngay sau đó hỏi "now fix the login bug," sự chú ý của model chuyển hẳn sang bug. Chỉ dẫn lưu memory đã được xử lý nhưng có thể không được thực thi.
 
-At the end of each complete query loop, a forked agent -- sharing the parent's prompt cache -- analyzes recent messages and writes any memories the main agent missed. When the main agent has already written memories in the current turn range, the extraction agent skips that range. The extraction agent has a constrained tool budget: read-only tools plus write access only to memory directory paths. Its prompt instructs a two-turn strategy: turn 1 reads in parallel, turn 2 writes in parallel.
+Ở cuối mỗi query loop hoàn chỉnh, một forked agent -- chia sẻ prompt cache của parent -- phân tích các message gần đây và ghi các memory mà agent chính bỏ lỡ. Khi agent chính đã ghi memory trong khoảng lượt hiện tại, extraction agent bỏ qua khoảng đó. Extraction agent có tool budget bị ràng buộc: tools chỉ đọc cộng quyền ghi chỉ trong các đường dẫn memory directory. Prompt của nó dạy chiến lược hai lượt: lượt 1 đọc song song, lượt 2 ghi song song.
 
-The interaction is cooperative, not competitive. The main agent's prompt always contains the full save instructions. When the main agent saves, the background agent defers. When it does not, the background agent catches the gap. This pattern -- a primary path with a background safety net -- makes memory capture more reliable without burdening the primary interaction. Neither alone would be sufficient.
+Tương tác này mang tính hợp tác, không cạnh tranh. Prompt của agent chính luôn chứa đầy đủ chỉ dẫn lưu. Khi agent chính đã lưu, background agent nhường. Khi chưa lưu, background agent lấp khoảng trống. Mẫu này -- đường chính cộng lưới an toàn nền -- làm việc capture memory đáng tin hơn mà không tăng tải cho tương tác chính. Chỉ một trong hai thì không đủ.
 
 ---
 
 ## Path Resolution and Security
 
-The auto-memory path is resolved through a priority chain:
+Đường dẫn auto-memory được resolve qua một chuỗi ưu tiên:
 
-1. **`CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`** -- Full-path override for Cowork.
-2. **`autoMemoryDirectory` in settings.json** -- Only trusted settings sources. Project settings are intentionally excluded.
+1. **`CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`** -- Full-path override cho Cowork.
+2. **`autoMemoryDirectory` in settings.json** -- Chỉ các nguồn settings đáng tin. Project settings bị loại trừ có chủ ý.
 3. **Default computed path** -- `~/.claude/projects/<sanitized-git-root>/memory/`.
 
-The exclusion of project settings is a security decision. A malicious repository could commit `.claude/settings.json` with `autoMemoryDirectory: "~/.ssh"`, and the permission carve-out for memory files would grant the model automatic write access to SSH keys. By limiting the override to policy, flag, local, and user settings -- none committable to a repository -- this attack vector is closed.
+Việc loại trừ project settings là một quyết định bảo mật. Một repository độc hại có thể commit `.claude/settings.json` với `autoMemoryDirectory: "~/.ssh"`, và permission carve-out cho file memory sẽ cấp cho model quyền ghi tự động vào SSH keys. Bằng cách giới hạn override chỉ ở policy, flag, local, và user settings -- những nơi không thể commit vào repository -- vector tấn công này bị đóng lại.
 
-The `isAutoMemPath()` function normalizes paths before prefix-checking to prevent traversal, and the trailing separator convention ensures prefix matching requires a directory boundary.
+Hàm `isAutoMemPath()` chuẩn hóa đường dẫn trước khi kiểm tra prefix để chặn traversal, và quy ước trailing separator đảm bảo prefix matching phải có ranh giới thư mục.
 
 ### The Enable/Disable Chain
 
-Whether auto-memory is active is determined by `isAutoMemoryEnabled()`, implementing its own priority chain: environment variable, bare mode, CCR without persistent storage, settings, default enabled. When disabled, both the prompt section is dropped (so the model receives no memory instructions) and the background processes stop (extract-memories, auto-dream, team sync). Both gates must align -- removing the prompt alone would not stop the extraction agent, which has its own prompt.
+Việc auto-memory có hoạt động hay không được quyết định bởi `isAutoMemoryEnabled()`, với chuỗi ưu tiên riêng: environment variable, bare mode, CCR không có persistent storage, settings, mặc định bật. Khi tắt, cả phần prompt đều bị loại (nên model không nhận chỉ dẫn memory) và các tiến trình nền cũng dừng (extract-memories, auto-dream, team sync). Cả hai gate phải đồng bộ -- chỉ gỡ prompt thôi không dừng được extraction agent vì nó có prompt riêng.
 
 ---
 
 ## Apply This: Designing Agent Memory
 
-The memory system's complexity is in the behavioral layer -- prompt instructions, LLM-powered recall, staleness management, background extraction -- not in storage infrastructure. This distribution of complexity is itself a design principle.
+Độ phức tạp của hệ memory nằm ở tầng hành vi -- chỉ dẫn prompt, recall do LLM điều khiển, quản lý staleness, background extraction -- chứ không nằm ở hạ tầng lưu trữ. Bản thân cách phân bổ độ phức tạp này đã là một nguyên lý thiết kế.
 
-**Files beat databases for agent memory.** Files are inspectable, editable, and version-controllable. Transparency builds trust. When the alternative is a database users cannot easily read, files win on trust alone.
+**Files beat databases for agent memory.** File có thể kiểm tra, chỉnh sửa, và quản lý phiên bản. Tính minh bạch xây niềm tin. Khi phương án còn lại là database user khó đọc trực tiếp, file thắng chỉ riêng ở mức độ tin cậy.
 
-**Constrain what gets saved, not just how.** The derivability test -- can this knowledge be re-derived from the current project state? -- eliminates the majority of potential memories while preserving the ones that actually matter.
+**Constrain what gets saved, not just how.** Derivability test -- tri thức này có thể suy ra lại từ trạng thái dự án hiện tại không? -- loại phần lớn memory tiềm năng, nhưng giữ lại đúng phần thực sự quan trọng.
 
-**Use an LLM for recall, not keywords or embeddings.** An LLM side-query understands context, reasons about what is already available in conversation, handles negation, and requires no index maintenance. The latency cost is real but bounded and hidden behind the main model's processing.
+**Use an LLM for recall, not keywords or embeddings.** Side-query bằng LLM hiểu ngữ cảnh, suy luận thứ đã có sẵn trong cuộc trò chuyện, xử lý phủ định, và không cần bảo trì index. Chi phí latency có thật nhưng hữu hạn và bị che sau quá trình xử lý của model chính.
 
-**Warn about staleness, do not expire.** Institutional knowledge may remain valid for years. Attaching age warnings lets the model treat old memories as hypotheses rather than facts. The human-readable age format triggers the right reasoning in a way that raw timestamps do not.
+**Warn about staleness, do not expire.** Institutional knowledge có thể còn giá trị nhiều năm. Gắn cảnh báo tuổi giúp model coi memory cũ là giả thuyết thay vì sự thật. Định dạng tuổi dễ đọc kích hoạt đúng kiểu suy luận theo cách timestamp thô không làm được.
 
-**Build a safety net for capture.** The main agent will miss memories. A background extraction agent that reviews recent conversation makes the system more reliable without burdening the primary interaction. When the main agent saves, the background agent defers.
+**Build a safety net for capture.** Agent chính sẽ bỏ sót memory. Một background extraction agent rà lại cuộc trò chuyện gần đây làm hệ thống đáng tin hơn mà không tăng tải cho tương tác chính. Khi agent chính lưu, background agent nhường.
 
 ---
 
-The agent can now learn across sessions -- accumulating knowledge about its user, their preferences, their project's state, and the corrections they have made. The memory system makes a philosophical commitment: that an agent's relationship with its user should deepen over time, not reset on every interaction. The file-based implementation makes that commitment tangible -- visible on disk, editable by humans, version-controlled alongside code. The agent's memory is not a black box. It is a collection of notes in a folder, written in a language that both the model and the human can read.
+Giờ đây agent có thể học xuyên phiên -- tích lũy tri thức về user, sở thích của họ, trạng thái dự án, và các correction họ đã đưa ra. Hệ memory đưa ra một cam kết mang tính triết học: quan hệ giữa agent và user phải sâu dần theo thời gian, không reset ở mỗi tương tác. Cách triển khai file-based làm cam kết đó trở nên hữu hình -- nhìn thấy được trên đĩa, sửa được bởi con người, và version-controlled song song với code. Memory của agent không phải black box. Nó là tập ghi chú trong một thư mục, viết bằng ngôn ngữ mà cả model lẫn con người đều đọc được.
 
-The next chapter examines how Claude Code extends its capabilities beyond the core: the skills system that teaches the model new behaviors, and the hooks system that lets external code constrain and modify those behaviors at over two dozen lifecycle points.
+Chương tiếp theo sẽ xem cách Claude Code mở rộng năng lực vượt ra ngoài lõi: hệ skills dạy model hành vi mới, và hệ hooks cho phép code bên ngoài ràng buộc và sửa đổi các hành vi đó tại hơn hai chục điểm trong lifecycle.

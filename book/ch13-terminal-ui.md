@@ -1,34 +1,34 @@
-# Chapter 13: The Terminal UI
+# Chương 13: The Terminal UI
 
-## Why Build a Custom Renderer?
+## Tại sao phải xây dựng một renderer tùy chỉnh?
 
-The terminal is not a browser. There is no DOM, no CSS engine, no compositor, no retained-mode graphics pipeline. There is a stream of bytes going to stdout and a stream of bytes coming from stdin. Everything between those two streams -- layout, styling, diffing, hit-testing, scrolling, selection -- has to be invented from scratch.
+Terminal không phải là trình duyệt. Không có DOM, không có CSS engine, không có compositor, không có retained-mode graphics pipeline. Chỉ có một luồng byte đi tới stdout và một luồng byte đi từ stdin. Mọi thứ nằm giữa hai luồng đó -- layout, styling, diffing, hit-testing, scrolling, selection -- đều phải được phát minh lại từ đầu.
 
-Claude Code needs a reactive UI. It has a prompt input, streaming markdown output, permission dialogs, progress spinners, scrollable message lists, search highlighting, and a vim-mode editor. React is the obvious choice for declaring this kind of component tree. But React needs a host environment to render into, and terminals do not provide one.
+Claude Code cần một UI phản ứng (reactive UI). Nó có ô nhập prompt, đầu ra markdown streaming, hộp thoại quyền, spinner tiến trình, danh sách tin nhắn cuộn được, tô sáng tìm kiếm, và trình soạn thảo chế độ vim. React là lựa chọn hiển nhiên để khai báo kiểu cây component này. Nhưng React cần một môi trường host để render vào, và terminal thì không cung cấp điều đó.
 
-Ink is the standard answer: a React renderer for terminals, built on Yoga for flexbox layout. Claude Code started with Ink, then forked it beyond recognition. The stock version allocates one JavaScript object per cell per frame -- on a 200x120 terminal, that is 24,000 objects created and garbage-collected every 16ms. It diffs at the string level, comparing entire rows of ANSI-encoded text. It has no concept of blit optimization, no double buffering, no cell-level dirty tracking. For a simple CLI dashboard refreshing once per second, this is fine. For an LLM agent streaming tokens at 60fps while the user scrolls through a conversation with hundreds of messages, it is a non-starter.
+Ink là câu trả lời tiêu chuẩn: một React renderer cho terminal, xây dựng trên Yoga cho layout flexbox. Claude Code bắt đầu với Ink, rồi fork đến mức gần như không còn nhận ra. Bản gốc cấp phát một object JavaScript cho mỗi cell ở mỗi frame -- trên terminal 200x120, tức là 24.000 object được tạo và garbage-collected mỗi 16ms. Nó diff ở mức chuỗi, so sánh toàn bộ hàng văn bản mã hóa ANSI. Nó không có khái niệm tối ưu blit, không có double buffering, không có theo dõi dirty ở mức cell. Với một dashboard CLI đơn giản refresh mỗi giây, vậy là ổn. Với một tác tử LLM stream token ở 60fps trong khi người dùng cuộn qua cuộc hội thoại có hàng trăm tin nhắn, đó là bế tắc.
 
-What remains in Claude Code is a custom rendering engine that shares Ink's conceptual DNA -- React reconciler, Yoga layout, ANSI output -- but reimplements the critical path: packed typed arrays instead of object-per-cell, pool-based string interning instead of string-per-frame, double-buffered rendering with cell-level diffing, and an optimizer that merges adjacent terminal writes into minimal escape sequences.
+Những gì còn lại trong Claude Code là một rendering engine tùy chỉnh vẫn giữ DNA khái niệm của Ink -- React reconciler, Yoga layout, ANSI output -- nhưng viết lại đường găng (critical path): packed typed arrays thay cho object-per-cell, pool-based string interning thay cho string-per-frame, render double-buffered với cell-level diffing, và một optimizer gộp các lần ghi terminal liền kề thành escape sequence tối thiểu.
 
-The result runs at 60fps on a 200-column terminal while streaming tokens from Claude. To understand how, we need to examine four layers: the custom DOM that React reconciles against, the rendering pipeline that converts that DOM into terminal output, the pool-based memory management that keeps the system alive for hours-long sessions without drowning in garbage collection, and the component architecture that ties it all together.
+Kết quả chạy ở 60fps trên terminal 200 cột khi stream token từ Claude. Để hiểu vì sao, ta cần xem xét bốn lớp: custom DOM mà React reconcile vào, rendering pipeline chuyển DOM đó thành đầu ra terminal, quản lý bộ nhớ dựa trên pool giúp hệ thống chạy hàng giờ mà không chết chìm trong garbage collection, và kiến trúc component gắn tất cả lại với nhau.
 
 ---
 
-## The Custom DOM
+## Custom DOM
 
-React's reconciler needs something to reconcile against. In the browser, that's the DOM. In Claude Code's terminal, it is a custom in-memory tree with seven element types and one text node type.
+React reconciler cần một thứ để reconcile vào. Trong trình duyệt, đó là DOM. Trong terminal của Claude Code, đó là một cây in-memory tùy chỉnh với bảy loại phần tử và một loại text node.
 
-The element types map directly to terminal rendering concepts:
+Các loại phần tử ánh xạ trực tiếp sang các khái niệm render terminal:
 
-- **`ink-root`** -- the document root, one per Ink instance
-- **`ink-box`** -- a flexbox container, the terminal equivalent of a `<div>`
-- **`ink-text`** -- a text node with a Yoga measure function for word wrapping
-- **`ink-virtual-text`** -- nested styled text inside another text node (automatically promoted from `ink-text` when inside a text context)
-- **`ink-link`** -- a hyperlink, rendered via OSC 8 escape sequences
-- **`ink-progress`** -- a progress indicator
-- **`ink-raw-ansi`** -- pre-rendered ANSI content with known dimensions, used for syntax-highlighted code blocks
+- **`ink-root`** -- document root, một cho mỗi instance Ink
+- **`ink-box`** -- một container flexbox, tương đương terminal của `<div>`
+- **`ink-text`** -- một text node có hàm đo của Yoga để xuống dòng
+- **`ink-virtual-text`** -- văn bản lồng nhau có style bên trong một text node khác (tự động nâng cấp từ `ink-text` khi ở trong ngữ cảnh text)
+- **`ink-link`** -- hyperlink, được render qua OSC 8 escape sequences
+- **`ink-progress`** -- chỉ báo tiến trình
+- **`ink-raw-ansi`** -- nội dung ANSI đã render sẵn với kích thước đã biết, dùng cho code block đã syntax-highlight
 
-Each `DOMElement` carries the state that the rendering pipeline needs:
+Mỗi `DOMElement` mang trạng thái mà rendering pipeline cần:
 
 ```typescript
 // Illustrative — actual interface extends this significantly
@@ -46,46 +46,46 @@ interface DOMElement {
 }
 ```
 
-The separation of `_eventHandlers` from `attributes` is deliberate. In React, handler identity changes on every render (unless manually memoized). If handlers were stored as attributes, every render would mark the node dirty and trigger a full repaint. By storing them separately, the reconciler's `commitUpdate` can update handlers without dirtying the node.
+Việc tách `_eventHandlers` khỏi `attributes` là có chủ ý. Trong React, danh tính handler thay đổi ở mỗi lần render (trừ khi memoize thủ công). Nếu handler được lưu như thuộc tính, mỗi lần render sẽ đánh dấu node dirty và kích hoạt repaint toàn phần. Bằng cách lưu tách riêng, `commitUpdate` của reconciler có thể cập nhật handler mà không làm node dirty.
 
-The `markDirty()` function is the bridge between DOM mutations and the rendering pipeline. When any node's content changes, `markDirty()` walks up through every ancestor, setting `dirty = true` on each element and calling `yogaNode.markDirty()` on leaf text nodes. This is how a single character change in a deeply nested text node schedules a re-render of the entire path to the root -- but only that path. Sibling subtrees remain clean and can be blitted from the previous frame.
+Hàm `markDirty()` là cây cầu giữa đột biến DOM và rendering pipeline. Khi nội dung của bất kỳ node nào thay đổi, `markDirty()` đi ngược lên toàn bộ tổ tiên, đặt `dirty = true` trên mỗi phần tử và gọi `yogaNode.markDirty()` trên text node lá. Đây là cách một thay đổi một ký tự trong text node lồng sâu lên lịch re-render toàn bộ đường đi về root -- nhưng chỉ đường đó. Các subtree anh em vẫn sạch và có thể được blit từ frame trước.
 
-The `ink-raw-ansi` element type deserves special mention. When a code block has already been syntax-highlighted (producing ANSI escape sequences), re-parsing those sequences to extract characters and styles would be wasteful. Instead, the pre-highlighted content is wrapped in an `ink-raw-ansi` node with `rawWidth` and `rawHeight` attributes that tell Yoga the exact dimensions. The rendering pipeline writes the raw ANSI content directly to the output buffer without decomposing it into individual styled characters. This makes syntax-highlighted code blocks essentially zero-cost after the initial highlighting pass -- the most expensive visual element in the UI is also the cheapest to render.
+Loại phần tử `ink-raw-ansi` đáng được nhấn mạnh riêng. Khi một code block đã được syntax-highlight (tạo ra ANSI escape sequences), phân tích lại các sequence đó để tách ký tự và style là lãng phí. Thay vào đó, nội dung đã highlight sẵn được bọc trong node `ink-raw-ansi` với thuộc tính `rawWidth` và `rawHeight` để báo cho Yoga biết kích thước chính xác. Rendering pipeline ghi thẳng nội dung ANSI thô vào output buffer mà không phân rã thành từng ký tự có style. Điều này khiến code block đã syntax-highlight gần như không tốn chi phí sau lượt highlight ban đầu -- phần tử thị giác đắt nhất trong UI lại là phần rẻ nhất để render.
 
-The `ink-text` node's measure function is worth understanding because it runs inside Yoga's layout pass, which is synchronous and blocking. The function receives the available width and must return the text's dimensions. It performs word wrapping (respecting the `wrap` style prop: `wrap`, `truncate`, `truncate-start`, `truncate-middle`), accounts for grapheme cluster boundaries (so it does not split a multi-codepoint emoji across lines), measures CJK double-width characters correctly (each counts as 2 columns), and strips ANSI escape codes from the width calculation (escape sequences have zero visual width). All of this must complete in microseconds per node, because a conversation with 50 visible text nodes means 50 measure function calls per layout pass.
+Hàm đo của node `ink-text` đáng để hiểu vì nó chạy bên trong layout pass của Yoga, vốn đồng bộ và chặn luồng. Hàm nhận chiều rộng khả dụng và phải trả về kích thước văn bản. Nó thực hiện xuống dòng (tôn trọng prop style `wrap`: `wrap`, `truncate`, `truncate-start`, `truncate-middle`), tính đến ranh giới grapheme cluster (để không tách một emoji nhiều codepoint qua nhiều dòng), đo đúng ký tự CJK double-width (mỗi ký tự tính 2 cột), và loại mã escape ANSI khỏi phép tính chiều rộng (escape sequence có độ rộng hiển thị bằng 0). Tất cả việc này phải hoàn tất trong microseconds cho mỗi node, vì một cuộc hội thoại có 50 text node đang thấy nghĩa là 50 lần gọi hàm đo cho mỗi layout pass.
 
 ---
 
-## The React Fiber Container
+## React Fiber Container
 
-The reconciler bridge uses `react-reconciler` to create a custom host config. This is the same API that React DOM and React Native use. The key difference: Claude Code runs in `ConcurrentRoot` mode.
+Cầu nối reconciler dùng `react-reconciler` để tạo custom host config. Đây là cùng API mà React DOM và React Native dùng. Khác biệt chính: Claude Code chạy ở chế độ `ConcurrentRoot`.
 
 ```typescript
 createContainer(rootNode, ConcurrentRoot, ...)
 ```
 
-ConcurrentRoot enables React's concurrent features -- Suspense for lazy-loaded syntax highlighting, transitions for non-blocking state updates during streaming. The alternative, `LegacyRoot`, would force synchronous rendering and block the event loop during heavy markdown re-parses.
+`ConcurrentRoot` bật các tính năng concurrent của React -- Suspense cho syntax highlighting lazy-loaded, transitions cho cập nhật trạng thái không chặn trong lúc streaming. Lựa chọn còn lại, `LegacyRoot`, sẽ ép render đồng bộ và chặn event loop khi markdown re-parse nặng.
 
-The host config methods map React operations to the custom DOM:
+Các phương thức host config ánh xạ thao tác React sang custom DOM:
 
-- **`createInstance(type, props)`** creates a `DOMElement` via `createNode()`, applies initial styles and attributes, attaches event handlers, and captures the React component owner chain for debug attribution. The owner chain is stored as `debugOwnerChain` and used by the `CLAUDE_CODE_DEBUG_REPAINTS` mode to attribute full-screen resets to specific components
-- **`createTextInstance(text)`** creates a `TextNode` -- but only if we are inside a text context. The reconciler enforces that raw strings must be wrapped in `<Text>`. Attempting to create a text node outside a text context throws, catching a class of bugs at reconciliation time rather than at render time
-- **`commitUpdate(node, type, oldProps, newProps)`** diffs old and new props via a shallow comparison, then applies only what changed. Styles, attributes, and event handlers each have their own update path. The diff function returns `undefined` if nothing changed, avoiding unnecessary DOM mutations entirely
-- **`removeChild(parent, child)`** removes the node from the tree, recursively frees Yoga nodes (calling `unsetMeasureFunc()` before `free()` to avoid accessing freed WASM memory), and notifies the focus manager
-- **`hideInstance(node)` / `unhideInstance(node)`** toggles `isHidden` and switches the Yoga node between `Display.None` and `Display.Flex`. This is React's mechanism for Suspense fallback transitions
-- **`resetAfterCommit(container)`** is the critical hook: it calls `rootNode.onComputeLayout()` to run Yoga, then `rootNode.onRender()` to schedule the terminal paint
+- **`createInstance(type, props)`** tạo `DOMElement` qua `createNode()`, áp dụng style và thuộc tính ban đầu, gắn event handler, và lấy chuỗi owner component React để gán debug. Chuỗi owner được lưu thành `debugOwnerChain` và được dùng bởi chế độ `CLAUDE_CODE_DEBUG_REPAINTS` để quy nguồn reset toàn màn hình về các component cụ thể
+- **`createTextInstance(text)`** tạo `TextNode` -- nhưng chỉ nếu ta đang ở trong text context. Reconciler cưỡng chế chuỗi thô phải được bọc trong `<Text>`. Cố tạo text node ngoài text context sẽ ném lỗi, bắt một lớp bug ngay tại thời điểm reconcile thay vì lúc render
+- **`commitUpdate(node, type, oldProps, newProps)`** diff prop cũ và mới bằng so sánh nông, rồi chỉ áp dụng phần thay đổi. Style, thuộc tính, và event handler mỗi loại có đường cập nhật riêng. Hàm diff trả về `undefined` nếu không có gì đổi, tránh hẳn đột biến DOM không cần thiết
+- **`removeChild(parent, child)`** gỡ node khỏi cây, giải phóng đệ quy Yoga node (gọi `unsetMeasureFunc()` trước `free()` để tránh truy cập bộ nhớ WASM đã giải phóng), và thông báo focus manager
+- **`hideInstance(node)` / `unhideInstance(node)`** bật/tắt `isHidden` và chuyển Yoga node giữa `Display.None` và `Display.Flex`. Đây là cơ chế của React cho chuyển cảnh fallback của Suspense
+- **`resetAfterCommit(container)`** là hook then chốt: nó gọi `rootNode.onComputeLayout()` để chạy Yoga, rồi `rootNode.onRender()` để lên lịch paint terminal
 
-The reconciler tracks two performance counters per commit cycle: Yoga layout time (`lastYogaMs`) and total commit time (`lastCommitMs`). These flow into the `FrameEvent` that the Ink class reports, enabling performance monitoring in production.
+Reconciler theo dõi hai bộ đếm hiệu năng cho mỗi vòng commit: thời gian layout Yoga (`lastYogaMs`) và tổng thời gian commit (`lastCommitMs`). Chúng đi vào `FrameEvent` mà lớp Ink báo cáo, cho phép giám sát hiệu năng trong production.
 
-The event system mirrors the browser's capture/bubble model. A `Dispatcher` class implements full event propagation with three phases: capture (root to target), at-target, and bubble (target to root). Event types map to React scheduling priorities -- discrete for keyboard and click (highest priority, processed immediately), continuous for scroll and resize (can be deferred). The dispatcher wraps all event processing in `reconciler.discreteUpdates()` for proper React batching.
+Hệ thống event phản chiếu mô hình capture/bubble của trình duyệt. Một lớp `Dispatcher` triển khai lan truyền event đầy đủ với ba pha: capture (root đến target), at-target, và bubble (target về root). Loại event ánh xạ sang độ ưu tiên lịch của React -- discrete cho keyboard và click (ưu tiên cao nhất, xử lý ngay), continuous cho scroll và resize (có thể trì hoãn). Dispatcher bọc toàn bộ xử lý event trong `reconciler.discreteUpdates()` để batching React đúng cách.
 
-When you press a key in the terminal, the resulting `KeyboardEvent` is dispatched through the custom DOM tree, bubbling from the focused element up to the root exactly as a keyboard event would bubble through browser DOM elements. Any handler along the path can call `stopPropagation()` or `preventDefault()`, and the semantics are identical to the browser specification.
+Khi bạn bấm một phím trong terminal, `KeyboardEvent` phát sinh sẽ được dispatch qua cây custom DOM, bubble từ phần tử đang focus lên root đúng như event bàn phím bubble qua các phần tử DOM trong trình duyệt. Bất kỳ handler nào trên đường đi cũng có thể gọi `stopPropagation()` hoặc `preventDefault()`, và ngữ nghĩa giống hệt đặc tả trình duyệt.
 
 ---
 
-## The Rendering Pipeline
+## Rendering Pipeline
 
-Every frame traverses seven stages, each timed individually:
+Mỗi frame đi qua bảy giai đoạn, mỗi giai đoạn được đo thời gian riêng:
 
 ```mermaid
 flowchart LR
@@ -102,21 +102,21 @@ flowchart LR
     style G fill:#e8f5e9
 ```
 
-Each stage is timed individually and reported in `FrameEvent.phases`. This per-stage instrumentation is essential for diagnosing performance issues: when a frame takes 30ms, you need to know whether the bottleneck is Yoga re-measuring text (stage 2), the renderer walking a large dirty subtree (stage 3), or stdout backpressure from a slow terminal (stage 7). The answer determines the fix.
+Mỗi giai đoạn được đo riêng và báo cáo trong `FrameEvent.phases`. Instrumentation theo từng giai đoạn là thiết yếu để chẩn đoán sự cố hiệu năng: khi một frame mất 30ms, bạn cần biết nút thắt ở Yoga đo lại text (giai đoạn 2), renderer đi qua một dirty subtree lớn (giai đoạn 3), hay stdout backpressure từ terminal chậm (giai đoạn 7). Câu trả lời quyết định cách sửa.
 
-**Stage 1: React commit and Yoga layout.** The reconciler processes state updates and calls `resetAfterCommit`. This sets the root node's width to `terminalColumns` and runs `yogaNode.calculateLayout()`. Yoga computes the entire flexbox tree in one pass, following the CSS flexbox specification: it resolves flex-grow, flex-shrink, padding, margin, gap, alignment, and wrapping across all nodes. The results -- `getComputedWidth()`, `getComputedHeight()`, `getComputedLeft()`, `getComputedTop()` -- are cached per node. For `ink-text` nodes, Yoga calls the custom measure function (`measureTextNode`) during layout, which computes text dimensions via word wrapping and grapheme measurement. This is the most expensive per-node operation: it must handle Unicode grapheme clusters, CJK double-width characters, emoji sequences, and ANSI escape codes embedded in text content.
+**Giai đoạn 1: React commit và Yoga layout.** Reconciler xử lý cập nhật trạng thái và gọi `resetAfterCommit`. Việc này đặt chiều rộng root node thành `terminalColumns` và chạy `yogaNode.calculateLayout()`. Yoga tính toàn bộ cây flexbox trong một pass, theo đặc tả CSS flexbox: nó giải flex-grow, flex-shrink, padding, margin, gap, alignment, và wrapping trên toàn bộ node. Kết quả -- `getComputedWidth()`, `getComputedHeight()`, `getComputedLeft()`, `getComputedTop()` -- được cache theo node. Với node `ink-text`, Yoga gọi hàm đo tùy chỉnh (`measureTextNode`) trong lúc layout, hàm này tính kích thước văn bản bằng xuống dòng và đo grapheme. Đây là thao tác đắt nhất trên mỗi node: nó phải xử lý Unicode grapheme cluster, ký tự CJK double-width, chuỗi emoji, và mã escape ANSI nhúng trong nội dung text.
 
-**Stage 2: DOM-to-screen.** The renderer walks the DOM tree depth-first, writing characters and styles into a `Screen` buffer. Each character becomes a packed cell. The output is a complete frame: every cell on the terminal has a defined character, style, and width.
+**Giai đoạn 2: DOM-to-screen.** Renderer duyệt cây DOM theo depth-first, ghi ký tự và style vào `Screen` buffer. Mỗi ký tự thành một packed cell. Đầu ra là một frame hoàn chỉnh: mọi cell trên terminal đều có ký tự, style, và width xác định.
 
-**Stage 3: Overlay.** Text selection and search highlighting modify the screen buffer in-place, flipping style IDs on matching cells. Selection applies inverse video to create the familiar "highlighted text" appearance. Search highlighting applies a more aggressive visual treatment: inverse + yellow foreground + bold + underline for the current match, inverse only for other matches. This contaminates the buffer -- tracked by a `prevFrameContaminated` flag so the next frame knows to skip the blit fast-path. The contamination is a deliberate tradeoff: modifying the buffer in-place avoids allocating a separate overlay buffer (saving 48KB on a 200x120 terminal), at the cost of one full-damage frame after the overlay is cleared.
+**Giai đoạn 3: Overlay.** Chọn văn bản và tô sáng tìm kiếm sửa screen buffer tại chỗ, lật style ID trên các cell khớp. Selection áp dụng inverse video để tạo hiệu ứng "văn bản được tô sáng" quen thuộc. Tô sáng tìm kiếm áp dụng xử lý thị giác mạnh hơn: inverse + foreground vàng + bold + underline cho kết quả khớp hiện tại, chỉ inverse cho các kết quả khác. Điều này làm bẩn buffer -- được theo dõi bởi cờ `prevFrameContaminated` để frame kế biết bỏ qua blit fast-path. Sự nhiễm bẩn này là đánh đổi có chủ ý: sửa buffer tại chỗ tránh phải cấp phát overlay buffer riêng (tiết kiệm 48KB trên terminal 200x120), đổi lại phải chịu một full-damage frame sau khi overlay bị xóa.
 
-**Stage 4: Diff.** The new screen is compared cell-by-cell against the front frame's screen. Only changed cells produce output. The comparison is two integer comparisons per cell (the two packed `Int32` words), and the diff walks the damage rectangle rather than the full screen. On a steady-state frame (only a spinner ticking), this might produce patches for 3 cells out of 24,000. Each patch is a `{ type: 'stdout', content: string }` object containing the cursor-move sequence and the ANSI-encoded cell content.
+**Giai đoạn 4: Diff.** Screen mới được so sánh cell-by-cell với screen của frame trước. Chỉ cell thay đổi mới tạo output. Phép so sánh là hai phép so sánh số nguyên mỗi cell (hai từ `Int32` đã packed), và diff đi trong damage rectangle thay vì toàn màn hình. Ở frame steady-state (chỉ có spinner chạy), có thể chỉ tạo patch cho 3 cell trên 24.000. Mỗi patch là object `{ type: 'stdout', content: string }` chứa chuỗi di chuyển con trỏ và nội dung cell mã hóa ANSI.
 
-**Stage 5: Optimize.** Adjacent patches on the same row are merged into a single write. Redundant cursor moves are eliminated -- if patch N ends at column 10 and patch N+1 starts at column 11, the cursor is already in the right position and no move sequence is needed. Style transitions are pre-serialized via the `StylePool.transition()` cache, so changing from "bold red" to "dim green" is a single cached string lookup rather than a diff-and-serialize operation. The optimizer typically reduces the byte count by 30-50% compared to naive per-cell output.
+**Giai đoạn 5: Optimize.** Các patch liền kề cùng hàng được gộp thành một lần ghi. Di chuyển con trỏ dư thừa bị loại -- nếu patch N kết thúc ở cột 10 và patch N+1 bắt đầu ở cột 11, con trỏ đã đúng vị trí và không cần chuỗi di chuyển. Chuyển style được pre-serialize qua cache `StylePool.transition()`, nên đổi từ "bold red" sang "dim green" là một lần tra chuỗi cache thay vì diff-và-serialize. Optimizer thường giảm số byte 30-50% so với output theo từng cell kiểu ngây thơ.
 
-**Stage 6: Write.** The optimized patches are serialized to ANSI escape sequences and written to stdout in a single `write()` call, wrapped in synchronous update markers (BSU/ESU) on terminals that support them. BSU (Begin Synchronized Update, `ESC [ ? 2026 h`) tells the terminal to buffer all following output, and ESU (`ESC [ ? 2026 l`) tells it to flush. This eliminates visible tearing on terminals that support the protocol -- the entire frame appears atomically.
+**Giai đoạn 6: Write.** Patch đã tối ưu được serialize thành ANSI escape sequences và ghi ra stdout trong một lần gọi `write()`, bọc bằng synchronous update markers (BSU/ESU) trên terminal hỗ trợ. BSU (Begin Synchronized Update, `ESC [ ? 2026 h`) báo terminal đệm toàn bộ output sau đó, và ESU (`ESC [ ? 2026 l`) báo flush. Điều này loại bỏ tearing nhìn thấy được trên terminal hỗ trợ giao thức -- toàn bộ frame xuất hiện nguyên tử.
 
-Every frame reports its timing breakdown via a `FrameEvent` object:
+Mỗi frame báo cáo phân rã thời gian qua một object `FrameEvent`:
 
 ```typescript
 interface FrameEvent {
@@ -135,42 +135,42 @@ interface FrameEvent {
 }
 ```
 
-When `CLAUDE_CODE_DEBUG_REPAINTS` is enabled, full-screen resets are attributed to their source React component via `findOwnerChainAtRow()`. This is the terminal equivalent of React DevTools' "Highlight Updates" -- it shows you which component caused the entire screen to repaint, which is the most expensive thing that can happen in the rendering pipeline.
+Khi bật `CLAUDE_CODE_DEBUG_REPAINTS`, các reset toàn màn hình được quy nguồn về component React thông qua `findOwnerChainAtRow()`. Đây là tương đương terminal của "Highlight Updates" trong React DevTools -- nó cho bạn biết component nào làm cả màn hình repaint, việc đắt đỏ nhất có thể xảy ra trong rendering pipeline.
 
-The blit optimization deserves special attention. When a node is not dirty and its position has not changed since the previous frame (checked via a node cache), the renderer copies cells directly from `prevScreen` to the current screen instead of re-rendering the subtree. This makes steady-state frames extremely cheap -- on a typical frame where only a spinner is ticking, the blit covers 99% of the screen and only the spinner's 3-4 cells are re-rendered from scratch.
+Tối ưu blit cần được chú ý đặc biệt. Khi một node không dirty và vị trí của nó không đổi so với frame trước (kiểm tra qua node cache), renderer sao chép cell trực tiếp từ `prevScreen` sang screen hiện tại thay vì render lại subtree. Điều này làm frame steady-state rất rẻ -- ở frame điển hình chỉ có spinner chạy, blit phủ 99% màn hình và chỉ 3-4 cell của spinner được render lại từ đầu.
 
-The blit is disabled under three conditions:
+Blit bị tắt trong ba điều kiện:
 
-1. **`prevFrameContaminated` is true** -- the selection overlay or a search highlight modified the front frame's screen buffer in-place, so those cells cannot be trusted as the "correct" previous state
-2. **An absolute-positioned node was removed** -- absolute positioning means the node could have painted over non-sibling cells, and those cells need to be re-rendered from the elements that actually own them
-3. **Layout shifted** -- any node's cached position differs from its current computed position, meaning the blit would copy cells to the wrong coordinates
+1. **`prevFrameContaminated` là true** -- overlay selection hoặc tô sáng tìm kiếm đã sửa screen buffer của frame trước tại chỗ, nên không thể tin các cell đó là trạng thái trước "đúng"
+2. **Một node absolute-positioned bị xóa** -- định vị tuyệt đối nghĩa là node có thể đã vẽ đè lên cell không cùng sibling, và các cell đó cần render lại từ phần tử thực sự sở hữu chúng
+3. **Layout dịch chuyển** -- vị trí cache của bất kỳ node nào khác vị trí tính toán hiện tại, nghĩa là blit sẽ sao chép cell sang tọa độ sai
 
-The damage rectangle (`screen.damage`) tracks the bounding box of all written cells during rendering. The diff only examines rows within this rectangle, skipping entirely unchanged regions. On a 120-row terminal where a streaming message occupies rows 80-100, the diff checks 20 rows instead of 120 -- a 6x reduction in comparison work.
+Damage rectangle (`screen.damage`) theo dõi hộp bao của toàn bộ cell đã ghi trong lúc render. Diff chỉ kiểm tra các hàng trong hình chữ nhật này, bỏ qua hoàn toàn vùng không đổi. Trên terminal 120 hàng nơi một tin nhắn đang stream chiếm hàng 80-100, diff kiểm tra 20 hàng thay vì 120 -- giảm công việc so sánh 6x.
 
 ---
 
-## Double-Buffer Rendering and Frame Scheduling
+## Double-Buffer Rendering và Frame Scheduling
 
-The Ink class maintains two frame buffers:
+Lớp Ink duy trì hai frame buffer:
 
 ```typescript
 private frontFrame: Frame;  // Currently displayed on terminal
 private backFrame: Frame;   // Being rendered into
 ```
 
-Each `Frame` contains:
+Mỗi `Frame` chứa:
 
-- `screen: Screen` -- the cell buffer (packed `Int32Array`)
-- `viewport: Size` -- terminal dimensions at render time
-- `cursor: { x, y, visible }` -- where to park the terminal cursor
-- `scrollHint` -- DECSTBM (scroll region) optimization hint for alt-screen mode
-- `scrollDrainPending` -- whether a ScrollBox has remaining scroll delta to process
+- `screen: Screen` -- cell buffer (packed `Int32Array`)
+- `viewport: Size` -- kích thước terminal tại thời điểm render
+- `cursor: { x, y, visible }` -- vị trí đặt con trỏ terminal
+- `scrollHint` -- gợi ý tối ưu DECSTBM (scroll region) cho chế độ alt-screen
+- `scrollDrainPending` -- liệu một ScrollBox còn scroll delta để xử lý hay không
 
-After each render, the frames swap: `backFrame = frontFrame; frontFrame = newFrame`. The old front frame becomes the next back frame, providing the `prevScreen` for blit optimization and the baseline for cell-level diffing.
+Sau mỗi lần render, hai frame hoán đổi: `backFrame = frontFrame; frontFrame = newFrame`. Front frame cũ trở thành back frame kế tiếp, cung cấp `prevScreen` cho tối ưu blit và mốc cơ sở cho diff mức cell.
 
-This double-buffer design eliminates allocation. Instead of creating a new `Screen` every frame, the renderer reuses the back frame's buffer. The swap is a pointer assignment. The pattern is borrowed from graphics programming, where double buffering prevents tearing by ensuring the display reads from a complete frame while the renderer writes to the other. In the terminal context, tearing is not the concern (the BSU/ESU protocol handles that); the concern is GC pressure from allocating and discarding `Screen` objects containing 48KB+ of typed arrays every 16ms.
+Thiết kế double-buffer này loại bỏ cấp phát. Thay vì tạo `Screen` mới mỗi frame, renderer tái sử dụng buffer của back frame. Việc hoán đổi là gán con trỏ. Mẫu này vay từ lập trình đồ họa, nơi double buffering ngăn tearing bằng cách đảm bảo màn hình đọc từ một frame hoàn chỉnh trong khi renderer ghi vào frame còn lại. Trong ngữ cảnh terminal, tearing không phải mối lo (giao thức BSU/ESU xử lý phần đó); mối lo là áp lực GC do cấp phát và bỏ `Screen` object chứa typed array 48KB+ mỗi 16ms.
 
-Render scheduling uses lodash `throttle` at 16ms (approximately 60fps), with leading and trailing edges enabled:
+Lên lịch render dùng `throttle` của lodash ở 16ms (xấp xỉ 60fps), bật cả cạnh đầu và cuối:
 
 ```typescript
 const deferredRender = () => queueMicrotask(this.onRender);
@@ -180,32 +180,32 @@ this.scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
 });
 ```
 
-The microtask deferral is not accidental. `resetAfterCommit` runs before React's layout effects phase. If the renderer ran synchronously here, it would miss cursor declarations set in `useLayoutEffect`. The microtask runs after layout effects but within the same event-loop tick -- the terminal sees a single, consistent frame.
+Việc trì hoãn bằng microtask không phải ngẫu nhiên. `resetAfterCommit` chạy trước pha layout effects của React. Nếu renderer chạy đồng bộ ở đây, nó sẽ bỏ lỡ khai báo con trỏ đặt trong `useLayoutEffect`. Microtask chạy sau layout effects nhưng vẫn trong cùng tick event-loop -- terminal nhìn thấy một frame đơn, nhất quán.
 
-For scroll operations, a separate `setTimeout` at 4ms (FRAME_INTERVAL_MS >> 2) provides faster scroll frames without interfering with the throttle. Scroll mutations bypass React entirely: `ScrollBox.scrollBy()` mutates DOM node properties directly, calls `markDirty()`, and schedules a render via microtask. No React state update, no reconciliation overhead, no re-rendering of the entire message list for a single wheel event.
+Với thao tác cuộn, một `setTimeout` riêng ở 4ms (FRAME_INTERVAL_MS >> 2) cung cấp frame cuộn nhanh hơn mà không can nhiễu throttle. Đột biến scroll đi vòng React hoàn toàn: `ScrollBox.scrollBy()` sửa trực tiếp thuộc tính DOM node, gọi `markDirty()`, và lên lịch render qua microtask. Không cập nhật state React, không overhead reconcile, không render lại toàn bộ danh sách tin nhắn chỉ vì một wheel event.
 
-**Resize handling** is synchronous, not debounced. When the terminal resizes, `handleResize` updates dimensions immediately to keep layout consistent. For alt-screen mode, it resets frame buffers and defers `ERASE_SCREEN` into the next atomic BSU/ESU paint block rather than writing it immediately. Writing the erase synchronously would leave the screen blank for the ~80ms the render takes; deferring it into the atomic block means old content stays visible until the new frame is fully ready.
+**Xử lý resize** là đồng bộ, không debounce. Khi terminal đổi kích thước, `handleResize` cập nhật kích thước ngay để giữ layout nhất quán. Với chế độ alt-screen, nó reset frame buffer và trì hoãn `ERASE_SCREEN` vào khối paint BSU/ESU nguyên tử kế tiếp thay vì ghi ngay. Ghi erase đồng bộ sẽ khiến màn hình trống trong ~80ms lúc render; trì hoãn vào khối nguyên tử nghĩa là nội dung cũ vẫn thấy được cho tới khi frame mới sẵn sàng hoàn toàn.
 
-**Alt-screen management** adds another layer. The `AlternateScreen` component enters DEC 1049 alternate screen buffer on mount, constraining height to terminal rows. It uses `useInsertionEffect` -- not `useLayoutEffect` -- to ensure the `ENTER_ALT_SCREEN` escape sequence reaches the terminal before the first render frame. Using `useLayoutEffect` would be too late: the first frame would render to the main screen buffer, producing a visible flash before the switch. `useInsertionEffect` runs before layout effects and before the browser (or terminal) would paint, making the transition seamless.
+**Quản lý alt-screen** thêm một lớp nữa. Component `AlternateScreen` vào DEC 1049 alternate screen buffer khi mount, giới hạn chiều cao theo số hàng terminal. Nó dùng `useInsertionEffect` -- không phải `useLayoutEffect` -- để đảm bảo escape sequence `ENTER_ALT_SCREEN` đến terminal trước frame render đầu tiên. Dùng `useLayoutEffect` là quá muộn: frame đầu sẽ render vào main screen buffer, tạo chớp nhìn thấy trước khi chuyển. `useInsertionEffect` chạy trước layout effects và trước khi trình duyệt (hoặc terminal) paint, khiến chuyển đổi mượt.
 
 ---
 
-## Pool-Based Memory: Why Interning Matters
+## Pool-Based Memory: Vì sao interning quan trọng
 
-A 200-column by 120-row terminal has 24,000 cells. If each cell were a JavaScript object with a `char` string, a `style` string, and a `hyperlink` string, that is 72,000 string allocations per frame -- plus 24,000 object allocations for the cells themselves. At 60fps, that is 5.76 million allocations per second. V8's garbage collector can handle this, but not without pauses that show up as dropped frames. The GC pauses are typically 1-5ms, but they are unpredictable: they might hit during a streaming token update, causing a visible stutter exactly when the user is watching the output.
+Terminal 200 cột x 120 hàng có 24.000 cell. Nếu mỗi cell là object JavaScript với chuỗi `char`, chuỗi `style`, và chuỗi `hyperlink`, đó là 72.000 lượt cấp phát chuỗi mỗi frame -- cộng 24.000 lượt cấp phát object cho chính các cell. Ở 60fps, tức 5,76 triệu cấp phát mỗi giây. Garbage collector của V8 xử lý được, nhưng không tránh được các pause gây rớt frame. Pause GC thường 1-5ms, nhưng khó đoán: chúng có thể trúng đúng lúc token đang stream, gây giật thấy rõ ngay khi người dùng nhìn đầu ra.
 
-Claude Code eliminates this entirely with packed typed arrays and three interning pools. The result: zero per-frame object allocations for the cell buffer. The only allocations are in the pools themselves (amortized, since most characters and styles are interned on the first frame and reused thereafter) and in the patch strings produced by the diff (unavoidable, since stdout.write requires string or Buffer arguments).
+Claude Code loại bỏ chuyện này hoàn toàn bằng packed typed arrays và ba interning pool. Kết quả: không có cấp phát object mỗi frame cho cell buffer. Cấp phát duy nhất nằm trong chính các pool (được khấu hao, vì phần lớn ký tự và style được intern ở frame đầu và tái dùng sau đó) và trong các chuỗi patch do diff tạo ra (không tránh được, vì stdout.write yêu cầu đối số string hoặc Buffer).
 
-**The cell layout** uses two `Int32` words per cell, stored in a contiguous `Int32Array`:
+**Bố cục cell** dùng hai từ `Int32` mỗi cell, lưu trong `Int32Array` liền mạch:
 
 ```
 word0: charId        (32 bits, index into CharPool)
 word1: styleId[31:17] | hyperlinkId[16:2] | width[1:0]
 ```
 
-A parallel `BigInt64Array` view over the same buffer enables bulk operations -- clearing a row is a single `fill()` call on 64-bit words instead of zeroing individual fields.
+Một view `BigInt64Array` song song trên cùng buffer cho phép thao tác hàng loạt -- xóa một hàng là một lần gọi `fill()` trên từ 64-bit thay vì đặt 0 từng trường.
 
-**CharPool** interns character strings to integer IDs. It has a fast path for ASCII: a 128-entry `Int32Array` maps character codes directly to pool indices, avoiding the `Map` lookup entirely. Multi-byte characters (emoji, CJK ideographs) fall through to a `Map<string, number>`. Index 0 is always space, index 1 is always empty string.
+**CharPool** intern chuỗi ký tự thành ID số nguyên. Nó có fast path cho ASCII: một `Int32Array` 128 phần tử ánh xạ trực tiếp mã ký tự tới chỉ số pool, tránh hẳn tra `Map`. Ký tự nhiều byte (emoji, chữ tượng hình CJK) rơi xuống `Map<string, number>`. Chỉ số 0 luôn là khoảng trắng, chỉ số 1 luôn là chuỗi rỗng.
 
 ```typescript
 export class CharPool {
@@ -230,15 +230,15 @@ export class CharPool {
 }
 ```
 
-**StylePool** interns arrays of ANSI style codes to integer IDs. The clever part: bit 0 of each ID encodes whether the style has a visible effect on space characters (background color, inverse, underline). Foreground-only styles get even IDs; styles visible on spaces get odd IDs. This lets the renderer skip invisible spaces with a single bitmask check -- `if (!(styleId & 1) && charId === 0) continue` -- without looking up the style definition. The pool also caches pre-serialized ANSI transition strings between any two style IDs, so transitioning from "bold red" to "dim green" is a cached string concatenation, not a diff-and-serialize operation.
+**StylePool** intern mảng mã style ANSI thành ID số nguyên. Điểm thông minh: bit 0 của mỗi ID mã hóa style có hiệu ứng thấy được trên ký tự khoảng trắng hay không (màu nền, inverse, underline). Style chỉ có foreground nhận ID chẵn; style hiện trên khoảng trắng nhận ID lẻ. Điều này cho phép renderer bỏ qua khoảng trắng vô hình bằng một kiểm tra bitmask -- `if (!(styleId & 1) && charId === 0) continue` -- mà không cần tra định nghĩa style. Pool cũng cache trước chuỗi chuyển ANSI đã serialize giữa mọi cặp style ID, nên chuyển từ "bold red" sang "dim green" là nối chuỗi cache, không phải diff-và-serialize.
 
-**HyperlinkPool** interns OSC 8 hyperlink URIs. Index 0 means no hyperlink.
+**HyperlinkPool** intern URI hyperlink OSC 8. Chỉ số 0 nghĩa là không có hyperlink.
 
-All three pools are shared across the front and back frames. This is a critical design decision. Because the pools are shared, interned IDs are valid across frames: the blit optimization can copy packed cell words directly from `prevScreen` to the current screen without re-interning. The diff can compare IDs as integers without string lookups. If each frame had its own pools, the blit would need to re-intern every copied cell (looking up the string by old ID, then interning it in the new pool), which would negate most of the blit's performance benefit.
+Cả ba pool được chia sẻ giữa front frame và back frame. Đây là quyết định thiết kế then chốt. Vì pool được chia sẻ, ID đã intern hợp lệ xuyên frame: tối ưu blit có thể sao chép trực tiếp packed cell words từ `prevScreen` sang screen hiện tại mà không phải intern lại. Diff có thể so ID như số nguyên mà không tra chuỗi. Nếu mỗi frame có pool riêng, blit sẽ phải intern lại mọi cell được sao chép (tra chuỗi theo ID cũ, rồi intern vào pool mới), điều này sẽ triệt tiêu phần lớn lợi ích hiệu năng của blit.
 
-Pools are periodically reset (every 5 minutes) to prevent unbounded growth during long sessions. A migration pass re-interns the front frame's live cells into the fresh pools.
+Pool được reset định kỳ (mỗi 5 phút) để ngăn tăng trưởng vô hạn trong các phiên dài. Một pass migration sẽ intern lại các cell còn sống của front frame vào pool mới.
 
-**CellWidth** handles double-wide characters with a 2-bit classification:
+**CellWidth** xử lý ký tự double-wide bằng phân loại 2-bit:
 
 | Value | Meaning |
 |-------|---------|
@@ -247,37 +247,37 @@ Pools are periodically reset (every 5 minutes) to prevent unbounded growth durin
 | 2 (SpacerTail) | Second column of a wide character |
 | 3 (SpacerHead) | Soft-wrap continuation marker |
 
-This is stored in the low 2 bits of `word1`, making width checks on packed cells free -- no field extraction needed for the common case.
+Thông tin này lưu ở 2 bit thấp của `word1`, khiến kiểm tra width trên packed cell gần như miễn phí -- không cần trích trường trong trường hợp thường gặp.
 
-Additional per-cell metadata lives in parallel arrays rather than the packed cells:
+Metadata bổ sung theo mỗi cell nằm trong các mảng song song thay vì trong packed cell:
 
-- **`noSelect: Uint8Array`** -- per-cell flag excluding content from text selection. Used for UI chrome (borders, indicators) that should not appear in copied text
-- **`softWrap: Int32Array`** -- per-row marker indicating word-wrap continuation. When the user selects text across a soft-wrapped line, the selection logic knows not to insert a newline at the wrap point
-- **`damage: Rectangle`** -- bounding box of all written cells in the current frame. The diff only examines rows within this rectangle, skipping entirely unchanged regions
+- **`noSelect: Uint8Array`** -- cờ theo cell để loại nội dung khỏi text selection. Dùng cho chrome UI (viền, chỉ báo) không nên xuất hiện trong văn bản copy
+- **`softWrap: Int32Array`** -- cờ theo hàng chỉ ra tiếp diễn xuống dòng theo từ. Khi người dùng chọn văn bản qua dòng soft-wrap, logic selection biết không chèn newline tại điểm wrap
+- **`damage: Rectangle`** -- hộp bao của toàn bộ cell đã ghi trong frame hiện tại. Diff chỉ xét hàng trong hình chữ nhật này, bỏ qua hoàn toàn vùng không đổi
 
-These parallel arrays avoid widening the packed cell format (which would increase cache pressure in the diff inner loop) while providing the metadata that selection, copy, and optimization need.
+Các mảng song song này tránh làm rộng định dạng packed cell (vốn sẽ tăng áp lực cache trong vòng lặp trong cùng của diff) trong khi vẫn cung cấp metadata mà selection, copy, và optimization cần.
 
-The `Screen` also exposes a `createScreen()` factory that takes dimensions and pool references. Creating a screen zeroes the `Int32Array` via `fill(0n)` on the `BigInt64Array` view -- a single native call that clears the entire buffer in microseconds. This is used during resize (when new frame buffers are needed) and during pool migration (when the old screen's cells are re-interned into fresh pools).
+`Screen` cũng cung cấp factory `createScreen()` nhận kích thước và tham chiếu pool. Tạo screen sẽ xóa `Int32Array` bằng `fill(0n)` trên view `BigInt64Array` -- một lời gọi native đơn để xóa toàn bộ buffer trong microseconds. Cách này dùng khi resize (khi cần frame buffer mới) và khi migration pool (khi cell của screen cũ được intern lại vào pool mới).
 
 ---
 
-## The REPL Component
+## Component REPL
 
-The REPL (`REPL.tsx`) is approximately 5,000 lines. It is the largest single component in the codebase, and for good reason: it is the orchestrator of the entire interactive experience. Everything flows through it.
+REPL (`REPL.tsx`) dài khoảng 5.000 dòng. Đây là component đơn lẻ lớn nhất codebase, và có lý do rõ ràng: nó là bộ điều phối toàn bộ trải nghiệm tương tác. Mọi thứ đều chảy qua nó.
 
-The component is organized into roughly nine sections:
+Component được tổ chức thành khoảng chín phần:
 
-1. **Imports** (~100 lines) -- pulls in bootstrap state, commands, history, hooks, components, keybindings, cost tracking, notifications, swarm/team support, voice integration
-2. **Feature-flagged imports** -- conditional loading of voice integration, proactive mode, brief tool, and coordinator agent via `feature()` guards with `require()`
-3. **State management** -- extensive `useState` calls covering messages, input mode, pending permissions, dialogs, cost thresholds, session state, tool state, and agent state
-4. **QueryGuard** -- manages active API call lifecycle, preventing concurrent requests from stepping on each other
-5. **Message handling** -- processes incoming messages from the query loop, normalizes ordering, manages streaming state
-6. **Tool permission flow** -- coordinates permission requests between tool use blocks and the PermissionRequest dialog
+1. **Imports** (~100 dòng) -- kéo vào bootstrap state, commands, history, hooks, components, keybindings, cost tracking, notifications, hỗ trợ swarm/team, tích hợp voice
+2. **Feature-flagged imports** -- tải có điều kiện tích hợp voice, proactive mode, brief tool, và coordinator agent qua guard `feature()` với `require()`
+3. **State management** -- `useState` dày đặc bao phủ messages, input mode, pending permissions, dialogs, ngưỡng chi phí, session state, tool state, và agent state
+4. **QueryGuard** -- quản lý vòng đời lời gọi API đang hoạt động, ngăn các request đồng thời đè lên nhau
+5. **Message handling** -- xử lý tin nhắn vào từ query loop, chuẩn hóa thứ tự, quản lý trạng thái streaming
+6. **Tool permission flow** -- điều phối yêu cầu quyền giữa các khối dùng tool và hộp thoại PermissionRequest
 7. **Session management** -- resume, switch, export conversations
-8. **Keybinding setup** -- wires the keybinding providers: `KeybindingSetup`, `GlobalKeybindingHandlers`, `CommandKeybindingHandlers`
-9. **Render tree** -- composes the final UI from all the above
+8. **Keybinding setup** -- nối các provider keybinding: `KeybindingSetup`, `GlobalKeybindingHandlers`, `CommandKeybindingHandlers`
+9. **Render tree** -- hợp thành UI cuối cùng từ toàn bộ phần trên
 
-Its render tree composes the full interface in fullscreen mode:
+Cây render của nó ghép toàn bộ giao diện ở chế độ fullscreen:
 
 ```mermaid
 graph TD
@@ -298,9 +298,9 @@ graph TD
     MR --> TUB[ToolUseBlock]
 ```
 
-`OffscreenFreeze` is a performance optimization specific to terminal rendering. When a message scrolls above the viewport, its React element is cached and its subtree is frozen. This prevents timer-based updates (spinners, elapsed time counters) in off-screen messages from triggering terminal resets. Without this, a spinning indicator in message 3 would cause a full repaint even though the user is looking at message 47.
+`OffscreenFreeze` là một mẫu tối ưu đặc thù cho render terminal (OffscreenFreeze, đóng băng nội dung ngoài khung nhìn). Khi một tin nhắn cuộn ra khỏi viewport, phần tử React của nó được cache và subtree của nó bị đóng băng. Điều này ngăn các cập nhật dựa trên timer (spinner, bộ đếm thời gian trôi qua) trong các tin nhắn ngoài màn hình kích hoạt reset terminal. Nếu không có nó, một chỉ báo quay ở tin nhắn 3 sẽ gây repaint toàn phần dù người dùng đang nhìn tin nhắn 47.
 
-The component is compiled by the React Compiler throughout. Instead of manual `useMemo` and `useCallback`, the compiler inserts per-expression memoization using slot arrays:
+Component này được React Compiler biên dịch xuyên suốt. Thay vì `useMemo` và `useCallback` thủ công, compiler chèn memoization theo từng biểu thức bằng slot arrays:
 
 ```typescript
 const $ = _c(14);  // 14 memoization slots
@@ -313,69 +313,69 @@ if ($[0] !== dep1 || $[1] !== dep2) {
 }
 ```
 
-This pattern appears in every component in the codebase. It provides finer granularity than `useMemo` (which memoizes at the hook level) -- individual expressions within a render function get their own dependency tracking and caching. For a 5,000-line component like the REPL, this eliminates hundreds of potential unnecessary recomputations per render.
+Mẫu này xuất hiện trong mọi component của codebase. Nó cho độ hạt mịn hơn `useMemo` (memoize ở mức hook) -- từng biểu thức trong hàm render có theo dõi phụ thuộc và cache riêng. Với component REPL 5.000 dòng, điều này loại bỏ hàng trăm phép tính lại không cần thiết mỗi lần render.
 
 ---
 
-## Selection and Search Highlighting
+## Selection và Search Highlighting
 
-Text selection and search highlighting operate as screen-buffer overlays, applied after the main render but before the diff.
+Text selection và search highlighting hoạt động như overlay trên screen buffer, áp dụng sau render chính nhưng trước diff.
 
-**Text selection** is alt-screen only. The Ink instance holds a `SelectionState` tracking anchor and focus points, drag mode (character/word/line), and captured rows that have scrolled off-screen. When the user clicks and drags, the selection handler updates these coordinates. During `onRender`, `applySelectionOverlay` walks the affected rows and modifies cell style IDs in-place using `StylePool.withSelectionBg()`, which returns a new style ID with inverse video added. This direct mutation of the screen buffer is why the `prevFrameContaminated` flag exists -- the front frame's buffer has been modified by the overlay, so the next frame cannot trust it for blit optimization and must do a full-damage diff.
+**Text selection** chỉ có ở alt-screen. Instance Ink giữ một `SelectionState` theo dõi điểm neo và điểm focus, chế độ kéo (character/word/line), và các hàng đã bắt mà đã cuộn khỏi màn hình. Khi người dùng click và kéo, selection handler cập nhật các tọa độ này. Trong `onRender`, `applySelectionOverlay` duyệt các hàng bị ảnh hưởng và sửa style ID của cell tại chỗ bằng `StylePool.withSelectionBg()`, trả về style ID mới với inverse video được thêm vào. Việc sửa trực tiếp screen buffer này là lý do tồn tại cờ `prevFrameContaminated` -- buffer của frame trước đã bị overlay sửa, nên frame sau không thể tin nó cho tối ưu blit và phải làm full-damage diff.
 
-Mouse tracking uses SGR 1003 mode, which reports clicks, drags, and motion with column/row coordinates. The `App` component implements multi-click detection: double-click selects a word, triple-click selects a line. The detection uses a 500ms timeout and 1-cell position tolerance (the mouse can move one cell between clicks without resetting the multi-click counter). Hyperlink clicks are intentionally deferred by this timeout -- double-clicking a link selects the word instead of opening the browser, matching the behavior users expect from text editors.
+Mouse tracking dùng chế độ SGR 1003, báo click, drag, và motion kèm tọa độ cột/hàng. Component `App` triển khai nhận diện đa click: double-click chọn một từ, triple-click chọn một dòng. Cơ chế này dùng timeout 500ms và dung sai vị trí 1 cell (chuột có thể lệch một cell giữa hai lần click mà không reset bộ đếm đa click). Click hyperlink được cố ý trì hoãn bởi timeout này -- double-click một link sẽ chọn từ thay vì mở trình duyệt, khớp hành vi người dùng mong đợi từ trình soạn thảo văn bản.
 
-A lost-release recovery mechanism handles the case where the user starts a drag inside the terminal, moves the mouse outside the window, and releases. The terminal reports the press and the drag, but not the release (which happened outside its window). Without recovery, the selection would be stuck in drag mode permanently. The recovery works by detecting mouse motion events with no buttons pressed -- if we are in a drag state and receive a no-button motion event, we infer that the button was released outside the window and finalize the selection.
+Một cơ chế phục hồi mất-release xử lý trường hợp người dùng bắt đầu kéo trong terminal, đưa chuột ra ngoài cửa sổ, rồi thả. Terminal báo sự kiện nhấn và kéo, nhưng không báo thả (vì thả ngoài cửa sổ của nó). Không có phục hồi, selection sẽ kẹt ở drag mode vĩnh viễn. Cơ chế phục hồi hoạt động bằng cách phát hiện sự kiện motion khi không có nút nào được nhấn -- nếu đang ở trạng thái kéo mà nhận motion không nút, ta suy ra nút đã được thả ngoài cửa sổ và kết thúc selection.
 
-**Search highlighting** has two mechanisms running in parallel. The scan-based path (`applySearchHighlight`) walks visible cells looking for the query string and applies SGR inverse styling. The position-based path uses pre-computed `MatchPosition[]` from `scanElementSubtree()`, stored message-relative, and applies them at known offsets with a "current match" yellow highlight using stacked ANSI codes (inverse + yellow foreground + bold + underline). The yellow foreground combined with inverse becomes a yellow background -- the terminal swaps fg/bg when inverse is active. The underline is the fallback visibility marker for themes where the yellow clashes with existing background colors.
+**Search highlighting** có hai cơ chế chạy song song. Đường scan-based (`applySearchHighlight`) duyệt cell đang thấy để tìm chuỗi truy vấn và áp dụng style SGR inverse. Đường position-based dùng `MatchPosition[]` tính trước từ `scanElementSubtree()`, lưu tương đối theo tin nhắn, rồi áp dụng tại offset đã biết với highlight vàng cho "kết quả hiện tại" bằng chồng mã ANSI (inverse + foreground vàng + bold + underline). Foreground vàng kết hợp inverse trở thành nền vàng -- terminal hoán đổi fg/bg khi inverse bật. Underline là chỉ báo dự phòng cho các theme mà màu vàng xung đột với màu nền hiện có.
 
-**Cursor declaration** solves a subtle problem. Terminal emulators render IME (Input Method Editor) preedit text at the physical cursor position. CJK users composing characters need the cursor to be at the text input's caret, not at the bottom of the screen where the terminal would naturally park it. The `useDeclaredCursor` hook lets a component declare where the cursor should be after each frame. The Ink class reads the declared node's position from `nodeCache`, translates it to screen coordinates, and emits cursor-move sequences after the diff. Screen readers and magnifiers also track the physical cursor, so this mechanism benefits accessibility as well as CJK input.
+**Khai báo con trỏ** giải một vấn đề tinh vi. Terminal emulator render văn bản preedit của IME (Input Method Editor) tại vị trí con trỏ vật lý. Người dùng CJK đang gõ cần con trỏ ở caret của ô nhập văn bản, không phải ở đáy màn hình nơi terminal thường đặt con trỏ. Hook `useDeclaredCursor` cho phép component khai báo vị trí con trỏ sau mỗi frame. Lớp Ink đọc vị trí node đã khai báo từ `nodeCache`, đổi sang tọa độ màn hình, và phát chuỗi di chuyển con trỏ sau diff. Screen reader và kính lúp cũng theo dõi con trỏ vật lý, nên cơ chế này có lợi cho accessibility cũng như nhập CJK.
 
-In main-screen mode, the declared cursor position is tracked separately from `frame.cursor` (which must stay at the content bottom for the log-update's relative-move invariants). In alt-screen mode, the problem is simpler: every frame begins with `CSI H` (cursor home), so the declared cursor is just an absolute position emitted at the end of the frame.
+Ở chế độ main-screen, vị trí con trỏ khai báo được theo dõi tách khỏi `frame.cursor` (vốn phải ở đáy nội dung để giữ bất biến relative-move của cập nhật log). Ở alt-screen, vấn đề đơn giản hơn: mỗi frame bắt đầu bằng `CSI H` (cursor home), nên con trỏ khai báo chỉ là một vị trí tuyệt đối phát ở cuối frame.
 
 ---
 
 ## Streaming Markdown
 
-Rendering LLM output is the most demanding task the terminal UI faces. Tokens arrive one at a time, 10-50 per second, and each one changes the content of a message that might contain code blocks, lists, bold text, and inline code. The naive approach -- re-parse the entire message on every token -- would be catastrophic at scale.
+Render đầu ra LLM là tác vụ nặng nhất mà terminal UI phải xử lý. Token đến từng cái một, 10-50 token mỗi giây, và mỗi token thay đổi nội dung của một tin nhắn có thể chứa code block, list, chữ đậm, và inline code. Cách ngây thơ -- re-parse toàn bộ tin nhắn ở mỗi token -- sẽ thảm họa ở quy mô lớn.
 
-Claude Code uses three optimizations:
+Claude Code dùng ba tối ưu:
 
-**Token caching.** A module-level LRU cache (500 entries) stores `marked.lexer()` results keyed by content hash. The cache survives React unmount/remount cycles during virtual scrolling. When a user scrolls back to a previously visible message, the markdown tokens are served from cache instead of re-parsed.
+**Token caching.** LRU cache cấp module (500 mục) lưu kết quả `marked.lexer()` theo content hash. Cache tồn tại qua các chu kỳ React unmount/remount trong virtual scrolling. Khi người dùng cuộn ngược tới một tin nhắn từng thấy, token markdown được trả từ cache thay vì parse lại.
 
-**Fast-path detection.** `hasMarkdownSyntax()` checks the first 500 characters for markdown markers via a single regex. If no syntax is found, it constructs a single-paragraph token directly, bypassing the full GFM parser. This saves approximately 3ms per render on plain-text messages -- which matters when you are rendering 60 frames per second.
+**Fast-path detection.** `hasMarkdownSyntax()` kiểm tra 500 ký tự đầu để tìm marker markdown bằng một regex duy nhất. Nếu không thấy cú pháp, nó dựng trực tiếp một token một đoạn văn, bỏ qua toàn bộ GFM parser. Việc này tiết kiệm xấp xỉ 3ms mỗi lần render trên tin nhắn văn bản thuần -- rất đáng kể khi bạn render 60 frame mỗi giây.
 
-**Lazy syntax highlighting.** Code block highlighting is loaded via React `Suspense`. The `MarkdownBody` component renders immediately with `highlight={null}` as a fallback, then resolves asynchronously with the cli-highlight instance. The user sees the code immediately (unstyled), then it pops into color a frame or two later.
+**Lazy syntax highlighting.** Highlight code block được tải qua React `Suspense`. Component `MarkdownBody` render ngay với `highlight={null}` làm fallback, rồi resolve bất đồng bộ với instance cli-highlight. Người dùng thấy code ngay (không style), rồi một hoặc hai frame sau code bật màu.
 
-The streaming case adds a wrinkle. When tokens arrive from the model, the markdown content grows incrementally. Re-parsing the entire content on every token would be O(n^2) over the course of a message. The fast-path detection helps -- most streaming content is plain text paragraphs, which bypass the parser entirely -- but for messages with code blocks and lists, the LRU cache provides the real optimization. The cache key is the content hash, so when 10 tokens arrive and only the last paragraph changes, the cached parse result for the unchanged prefix is reused. The markdown renderer only re-parses the tail that changed.
+Trường hợp streaming thêm một nếp gấp. Khi token đến từ model, nội dung markdown tăng dần. Re-parse toàn bộ nội dung mỗi token sẽ thành O(n^2) trong suốt vòng đời tin nhắn. Fast-path detection có ích -- phần lớn nội dung streaming là đoạn văn bản thuần, bỏ qua parser hoàn toàn -- nhưng với tin nhắn có code block và list, LRU cache mới là tối ưu thực sự. Khóa cache là content hash, nên khi 10 token đến và chỉ đoạn cuối thay đổi, kết quả parse đã cache của tiền tố không đổi được tái dùng. Renderer markdown chỉ parse lại phần đuôi đã thay đổi.
 
-The `StreamingMarkdown` component is distinct from the static `Markdown` component. It handles the case where the content is still being generated: incomplete code fences (a ` ``` ` without a closing fence), partial bold markers, and truncated list items. The streaming variant is more forgiving in its parsing -- it does not error on unclosed syntax because the closing syntax has not arrived yet. When the message finishes streaming, the component transitions to the static `Markdown` renderer, which applies full GFM parsing with strict syntax checking.
+Component `StreamingMarkdown` tách biệt với component `Markdown` tĩnh. Nó xử lý trường hợp nội dung còn đang được sinh: code fence chưa hoàn chỉnh (một ` ``` ` chưa có fence đóng), marker chữ đậm dở dang, và mục danh sách bị cắt cụt. Biến thể streaming khoan dung hơn khi parse -- nó không báo lỗi với cú pháp chưa đóng vì cú pháp đóng chưa đến. Khi tin nhắn stream xong, component chuyển sang renderer `Markdown` tĩnh, nơi áp dụng parse GFM đầy đủ với kiểm tra cú pháp nghiêm ngặt.
 
-Syntax highlighting for code blocks is the most expensive per-element operation in the rendering pipeline. A 100-line code block can take 50-100ms to highlight with cli-highlight. Loading the highlighting library itself takes 200-300ms (it bundles grammar definitions for dozens of languages). Both costs are hidden behind React `Suspense`: the code block renders immediately as plain text, the highlighting library loads asynchronously, and when it resolves, the code block re-renders with colors. The user sees code instantly and colors a moment later -- a much better experience than a 300ms blank frame while the library loads.
+Syntax highlighting cho code block là thao tác đắt nhất theo từng phần tử trong rendering pipeline. Một code block 100 dòng có thể mất 50-100ms để highlight bằng cli-highlight. Tải chính thư viện highlight còn mất 200-300ms (nó đóng gói grammar cho hàng chục ngôn ngữ). Cả hai chi phí đều được che sau React `Suspense`: code block render ngay dưới dạng văn bản thuần, thư viện highlight tải bất đồng bộ, và khi resolve, code block render lại có màu. Người dùng thấy code tức thì và thấy màu sau đó một nhịp -- trải nghiệm tốt hơn nhiều so với frame trống 300ms trong lúc thư viện tải.
 
 ---
 
-## Apply This: Rendering Streaming Output Efficiently
+## Apply This: Render đầu ra streaming hiệu quả
 
-The terminal rendering pipeline is a case study in eliminating work. Three principles drive the design:
+Rendering pipeline của terminal là một case study về loại bỏ công việc. Ba nguyên tắc dẫn dắt thiết kế:
 
-**Intern everything.** If you have a value that appears in thousands of cells -- a style, a character, a URL -- store it once and reference it by integer ID. Integer comparison is one CPU instruction. String comparison is a loop. When your inner loop runs 24,000 times per frame at 60fps, the difference between `===` on integers and `===` on strings is the difference between smooth scrolling and visible lag.
+**Intern everything.** Nếu bạn có một giá trị xuất hiện ở hàng nghìn cell -- style, ký tự, URL -- hãy lưu một lần và tham chiếu bằng ID số nguyên. So sánh số nguyên là một lệnh CPU. So sánh chuỗi là một vòng lặp. Khi vòng lặp trong cùng chạy 24.000 lần mỗi frame ở 60fps, khác biệt giữa `===` trên số nguyên và `===` trên chuỗi chính là khác biệt giữa cuộn mượt và trễ nhìn thấy được.
 
-**Diff at the right level.** Cell-level diffing sounds expensive -- 24,000 comparisons per frame. But it is two integer comparisons per cell (the packed words), and on a steady-state frame, the diff bails out of most rows after checking the first cell. The alternative -- re-rendering the entire screen and writing it to stdout -- would produce 100KB+ of ANSI escape sequences per frame. The diff typically produces under 1KB.
+**Diff at the right level.** Diff ở mức cell nghe có vẻ đắt -- 24.000 phép so sánh mỗi frame. Nhưng đó là hai phép so sánh số nguyên mỗi cell (các word đã packed), và ở frame steady-state, diff thoát khỏi phần lớn hàng sau khi kiểm tra cell đầu tiên. Lựa chọn thay thế -- render lại toàn màn hình và ghi ra stdout -- sẽ tạo 100KB+ ANSI escape sequences mỗi frame. Diff thường tạo dưới 1KB.
 
-**Separate the hot path from React.** Scroll events arrive at mouse-input frequency (potentially hundreds per second). Routing each one through React's reconciler -- state update, reconciliation, commit, layout, render -- adds 5-10ms of latency per event. By mutating DOM nodes directly and scheduling renders via microtask, the scroll path stays under 1ms. React is involved only in the final paint, where it would run anyway.
+**Separate the hot path from React.** Sự kiện cuộn đến với tần suất input chuột (có thể hàng trăm mỗi giây). Điều hướng từng cái qua React reconciler -- cập nhật state, reconcile, commit, layout, render -- thêm 5-10ms độ trễ mỗi sự kiện. Bằng cách sửa trực tiếp DOM node và lên lịch render qua microtask, đường cuộn giữ dưới 1ms. React chỉ tham gia ở lần paint cuối, nơi dù sao nó cũng sẽ chạy.
 
-These principles apply to any streaming output system, not just terminals. If you are building a web application that renders real-time data -- a log viewer, a chat client, a monitoring dashboard -- the same tradeoffs apply. Intern repeated values. Diff against the previous frame. Keep the hot path out of your reactive framework.
+Các nguyên tắc này áp dụng cho mọi hệ thống đầu ra streaming, không chỉ terminal. Nếu bạn xây một ứng dụng web render dữ liệu thời gian thực -- log viewer, chat client, monitoring dashboard -- các đánh đổi tương tự vẫn đúng. Intern giá trị lặp lại. Diff với frame trước. Giữ hot path ngoài reactive framework.
 
-A fourth principle, specific to long-running sessions: **clean up periodically.** Claude Code's pools grow monotonically as new characters and styles are interned. Over a multi-hour session, the pools could accumulate thousands of entries that are no longer referenced by any live cell. The 5-minute reset cycle bounds this growth: every 5 minutes, fresh pools are created, the front frame's cells are migrated (re-interned into the new pools), and the old pools become garbage. This is a generational collection strategy, applied at the application level because the JavaScript GC has no visibility into the semantic liveness of pool entries.
+Nguyên tắc thứ tư, riêng cho phiên chạy dài: **dọn dẹp định kỳ.** Pool của Claude Code tăng đơn điệu khi ký tự và style mới được intern. Trong một phiên nhiều giờ, pool có thể tích lũy hàng nghìn mục không còn được cell sống nào tham chiếu. Chu kỳ reset 5 phút chặn tăng trưởng này: cứ mỗi 5 phút, pool mới được tạo, cell của front frame được migrate (intern lại vào pool mới), và pool cũ trở thành garbage. Đây là chiến lược thu gom thế hệ, áp dụng ở tầng ứng dụng vì GC JavaScript không thấy được độ sống theo ngữ nghĩa của mục trong pool.
 
-The decision to use `Int32Array` over plain objects has a subtler benefit beyond GC pressure: memory locality. When the diff compares 24,000 cells, it walks a contiguous typed array. Modern CPUs prefetch sequential memory accesses, so the entire screen comparison runs within the L1/L2 cache. An object-per-cell layout would scatter cells across the heap, turning every comparison into a cache miss. The performance difference is measurable: on a 200x120 screen, the typed-array diff completes in under 0.5ms, while an equivalent object-based diff takes 3-5ms -- enough to blow the 16ms frame budget when combined with the other pipeline stages.
+Quyết định dùng `Int32Array` thay vì object thuần có một lợi ích tinh tế hơn áp lực GC: memory locality. Khi diff so 24.000 cell, nó duyệt một typed array liền mạch. CPU hiện đại prefetch truy cập bộ nhớ tuần tự, nên toàn bộ so sánh màn hình chạy trong cache L1/L2. Bố cục object-per-cell sẽ rải cell khắp heap, biến mỗi phép so sánh thành cache miss. Chênh lệch hiệu năng đo được rõ: trên màn hình 200x120, typed-array diff hoàn tất dưới 0,5ms, trong khi diff dựa object tương đương mất 3-5ms -- đủ làm vỡ ngân sách frame 16ms khi cộng với các giai đoạn pipeline khác.
 
-A fifth principle applies to any system that renders into a fixed-size grid: **track damage bounds.** The `damage` rectangle on each screen records the bounding box of cells that were written during rendering. The diff consults this rectangle and skips rows outside it entirely. When a streaming message occupies the bottom 20 rows of a 120-row terminal, the diff examines 20 rows, not 120. Combined with the blit optimization (which populates the damage rectangle only for re-rendered regions, not blitted ones), this means the common case -- one message streaming while the rest of the conversation is static -- touches a fraction of the screen buffer.
+Nguyên tắc thứ năm áp dụng cho mọi hệ thống render vào lưới kích thước cố định: **theo dõi damage bounds.** Hình chữ nhật `damage` trên mỗi screen ghi lại hộp bao của cell đã ghi trong lúc render. Diff tham chiếu hình chữ nhật này và bỏ hẳn các hàng ngoài nó. Khi một tin nhắn đang stream chiếm 20 hàng cuối của terminal 120 hàng, diff xét 20 hàng chứ không phải 120. Kết hợp với tối ưu blit (chỉ điền damage rectangle cho vùng render lại, không phải vùng blit), điều này có nghĩa trường hợp thường gặp -- một tin nhắn stream trong khi phần còn lại của hội thoại tĩnh -- chỉ chạm vào một phần nhỏ screen buffer.
 
-The broader lesson: performance in a rendering system is not about making any single operation fast. It is about eliminating operations entirely. The blit eliminates re-rendering. The damage rectangle eliminates diffing. The pool sharing eliminates re-interning. The packed cells eliminate allocation. Each optimization removes an entire category of work, and they stack multiplicatively.
+Bài học rộng hơn: hiệu năng trong một hệ thống render không nằm ở việc làm một thao tác đơn lẻ nhanh hơn. Nó nằm ở việc loại bỏ hẳn thao tác. Blit loại bỏ render lại. Damage rectangle loại bỏ diff. Chia sẻ pool loại bỏ intern lại. Packed cell loại bỏ cấp phát. Mỗi tối ưu xóa đi một hạng mục công việc trọn vẹn, và chúng cộng dồn theo cấp số nhân.
 
-To put numbers on it: a worst-case frame (everything dirty, no blit, full-screen damage) on a 200x120 terminal takes approximately 12ms. A best-case frame (one dirty node, blit everything else, 3-row damage rectangle) takes under 1ms. The system spends most of its time in the best case. The streaming token arrival triggers one dirty text node, which dirties its ancestors up to the message container, which is typically 10-30 rows of the screen. The blit handles the other 90-110 rows. The damage rectangle constrains the diff to the dirty region. The pool lookups are integer operations. The steady-state cost of streaming one token is dominated by Yoga layout (which re-measures the dirty text node and its ancestors) and the markdown re-parse -- not by the rendering pipeline itself.
+Đặt con số cụ thể: một frame xấu nhất (mọi thứ dirty, không blit, damage toàn màn hình) trên terminal 200x120 mất khoảng 12ms. Một frame tốt nhất (một node dirty, blit mọi thứ còn lại, damage rectangle 3 hàng) mất dưới 1ms. Hệ thống dành phần lớn thời gian ở trường hợp tốt nhất. Việc token streaming đến làm bẩn một text node, node đó làm bẩn tổ tiên lên tới message container, thường là 10-30 hàng màn hình. Blit xử lý 90-110 hàng còn lại. Damage rectangle giới hạn diff vào vùng bẩn. Tra pool là phép toán số nguyên. Chi phí steady-state của việc stream một token bị chi phối bởi Yoga layout (đo lại text node bẩn và tổ tiên của nó) và markdown re-parse -- không phải bởi chính rendering pipeline.
 
 
 ---

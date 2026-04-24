@@ -1,24 +1,24 @@
-# Chapter 17: Performance -- Every Millisecond and Token Counts
+# Chương 17: Performance -- Every Millisecond and Token Counts
 
-## The Senior Engineer's Playbook
+## The Senior Engineer's Playbook (Sổ tay của kỹ sư cấp cao)
 
-Performance optimization in an agentic system is not one problem. It is five:
+Tối ưu hiệu năng trong một hệ thống agentic không phải một bài toán. Nó là năm bài toán:
 
-1. **Startup latency** -- the time from keystroke to first useful output. Users abandon tools that feel slow to launch.
-2. **Token efficiency** -- the fraction of the context window consumed by useful content versus overhead. The context window is the most constrained resource.
-3. **API cost** -- the dollar amount per turn. Prompt caching can reduce this by 90%, but only if the system preserves cache stability across turns.
-4. **Rendering throughput** -- the frames per second during streaming output. Chapter 13 covered the rendering architecture; this chapter covers the performance measurements and optimizations that keep it fast.
-5. **Search speed** -- the time to find a file in a 270,000-path codebase on every keystroke.
+1. **Startup latency** -- thời gian từ lúc gõ phím đến khi có đầu ra hữu ích đầu tiên. Người dùng sẽ bỏ công cụ nếu cảm giác khởi chạy chậm.
+2. **Token efficiency** -- tỷ lệ context window được dùng cho nội dung hữu ích so với phần overhead. Context window là tài nguyên bị ràng buộc chặt nhất.
+3. **API cost** -- chi phí tiền cho mỗi lượt. Prompt caching có thể giảm 90%, nhưng chỉ khi hệ thống giữ được cache stability qua các lượt.
+4. **Rendering throughput** -- số khung hình/giây trong lúc stream đầu ra. Chương 13 đã nói về kiến trúc rendering; chương này nói về đo đạc hiệu năng và các tối ưu giúp nó luôn nhanh.
+5. **Search speed** -- thời gian tìm một file trong codebase 270.000 đường dẫn ở mỗi lần gõ phím.
 
-Claude Code attacks all five with techniques ranging from the obvious (memoization) to the subtle (26-bit bitmaps for pre-filtering fuzzy search). A note on methodology: these are not theoretical optimizations. Claude Code ships with 50+ startup profiling checkpoints, sampled at 100% of internal users and 0.5% of external users. Every optimization below was motivated by data from this instrumentation, not by intuition.
+Claude Code tấn công cả năm mặt này bằng các kỹ thuật từ hiển nhiên (memoization) đến tinh vi (bitmap 26-bit để pre-filter fuzzy search). Một ghi chú về phương pháp luận: đây không phải tối ưu lý thuyết. Claude Code phát hành kèm hơn 50 startup profiling checkpoints, lấy mẫu ở 100% người dùng nội bộ và 0.5% người dùng bên ngoài. Mọi tối ưu bên dưới đều được thúc đẩy bởi dữ liệu từ lớp instrumentation này, không phải trực giác.
 
 ---
 
 ## Saving Milliseconds at Startup
 
-### Module-Level I/O Parallelism
+### Module-Level I/O Parallelism (song song hóa I/O ở cấp module)
 
-The entry point `main.tsx` deliberately violates "no side effects at module scope":
+Điểm vào `main.tsx` cố ý vi phạm nguyên tắc "không side effects ở phạm vi module":
 
 ```typescript
 profileCheckpoint('main_tsx_entry');
@@ -26,15 +26,15 @@ startMdmRawRead();       // fires plutil/reg-query subprocesses
 startKeychainPrefetch();  // fires both macOS keychain reads in parallel
 ```
 
-Two macOS keychain entries would otherwise cost ~65ms of sequential synchronous spawns. By launching both as fire-and-forget promises at the module level, they execute in parallel with ~135ms of module loading during which the CPU would otherwise be idle.
+Hai mục keychain trên macOS nếu chạy tuần tự sẽ tốn khoảng ~65ms do spawn đồng bộ. Bằng cách khởi chạy cả hai dưới dạng promise fire-and-forget ở cấp module, chúng chạy song song với ~135ms thời gian nạp module mà nếu không thì CPU sẽ rỗi.
 
-### API Preconnection
+### API Preconnection (kết nối trước API)
 
-`apiPreconnect.ts` fires a `HEAD` request to the Anthropic API during initialization, overlapping the TCP+TLS handshake (100-200ms) with setup work. In interactive mode, the overlap is unbounded -- the connection warms while the user types. The request fires after `applyExtraCACertsFromConfig()` and `configureGlobalAgents()` so the warmed connection uses the correct transport configuration.
+`apiPreconnect.ts` bắn một request `HEAD` đến Anthropic API trong lúc khởi tạo, chồng lấp bắt tay TCP+TLS (100-200ms) với công việc setup. Ở interactive mode, phần chồng lấp này là không bị chặn trên -- kết nối được làm ấm trong lúc người dùng đang gõ. Request được gửi sau `applyExtraCACertsFromConfig()` và `configureGlobalAgents()` để kết nối đã làm ấm dùng đúng cấu hình transport.
 
-### Fast-Path Dispatch and Deferred Imports
+### Fast-Path Dispatch and Deferred Imports (điều phối fast-path và import trì hoãn)
 
-The CLI entry point contains early-return paths for specialized subcommands -- `claude mcp` never loads the React REPL, `claude daemon` never loads the tool system. Heavy modules are loaded via dynamic `import()` only when needed: OpenTelemetry (~400KB + ~700KB gRPC), event logging, error dialogs, upstream proxy. `LazySchema` defers Zod schema construction to first validation, pushing the cost past startup.
+Điểm vào CLI có các nhánh trả về sớm cho subcommand chuyên biệt -- `claude mcp` không bao giờ nạp React REPL, `claude daemon` không bao giờ nạp tool system. Module nặng được nạp bằng `import()` động chỉ khi cần: OpenTelemetry (~400KB + ~700KB gRPC), event logging, error dialogs, upstream proxy. `LazySchema` trì hoãn việc dựng Zod schema đến lần validate đầu tiên, đẩy chi phí ra sau giai đoạn startup.
 
 ---
 
@@ -42,23 +42,23 @@ The CLI entry point contains early-return paths for specialized subcommands -- `
 
 ### Slot Reservation: 8K Default, 64K Escalation
 
-The most impactful single optimization:
+Tối ưu có tác động lớn nhất nếu xét đơn lẻ:
 
-The default output slot reservation is 8,000 tokens, escalating to 64,000 on truncation. The API reserves `max_output_tokens` of capacity for the model's response. The default SDK value is 32K-64K, but production data shows p99 output length is 4,911 tokens. The default over-reserves by 8-16x, wasting 24,000-59,000 tokens per turn. Claude Code caps at 8K and retries at 64K on the rare truncation (<1% of requests). For a 200K window, this is a 12-28% improvement in usable context -- for free.
+Mức dự trữ output slot mặc định là 8.000 token, tăng lên 64.000 khi bị truncation. API dự trữ `max_output_tokens` dung lượng cho phản hồi của model. Giá trị SDK mặc định là 32K-64K, nhưng dữ liệu production cho thấy độ dài output p99 là 4.911 token. Mặc định này đang dự trữ thừa 8-16x, lãng phí 24.000-59.000 token mỗi lượt. Claude Code chặn ở 8K và retry ở 64K trong trường hợp truncation hiếm gặp (<1% request). Với cửa sổ 200K, đây là mức cải thiện 12-28% cho usable context -- miễn phí.
 
-### Tool Result Budgeting
+### Tool Result Budgeting (phân bổ ngân sách kết quả tool)
 
 | Limit | Value | Purpose |
 |-------|-------|---------|
-| Per-tool characters | 50,000 | Results persisted to disk when exceeded |
-| Per-tool tokens | 100,000 | ~400KB text upper bound |
-| Per-message aggregate | 200,000 chars | Prevents N parallel tools from blowing the budget in one turn |
+| Per-tool characters | 50,000 | Kết quả được ghi xuống đĩa khi vượt ngưỡng |
+| Per-tool tokens | 100,000 | Cận trên ~400KB văn bản |
+| Per-message aggregate | 200,000 chars | Ngăn N tool chạy song song làm nổ ngân sách trong một lượt |
 
-The per-message aggregate is the key insight. Without it, "read all files in src/" could produce 10 parallel reads each returning 40K characters.
+Per-message aggregate là insight quan trọng. Nếu không có nó, "read all files in src/" có thể tạo 10 lượt đọc song song, mỗi lượt trả về 40K ký tự.
 
-### Context Window Sizing
+### Context Window Sizing (định cỡ context window)
 
-The default 200K-token window is expandable to 1M via the `[1m]` suffix on model names or experiment treatment. When usage approaches the limit, a 4-layer compaction system progressively summarizes older content. Token counting is anchored on the API's actual `usage` field, not client-side estimation -- accounting for prompt caching credits, thinking tokens, and server-side transformations.
+Context window mặc định 200K token có thể mở rộng lên 1M qua hậu tố `[1m]` trên tên model hoặc qua treatment thử nghiệm. Khi mức sử dụng tiến gần giới hạn, hệ thống compaction 4 lớp sẽ tóm tắt dần nội dung cũ hơn. Việc đếm token bám theo trường `usage` thực tế từ API, không dựa vào ước lượng phía client -- vì vậy đã tính cả prompt caching credits, thinking tokens, và các biến đổi phía server.
 
 ---
 
@@ -86,23 +86,23 @@ graph LR
     style E fill:#ffcdd2
 ```
 
-Anthropic's prompt cache operates on exact prefix matching. If a single token changes mid-prefix, everything after is a cache miss. Claude Code structures the entire prompt so stable parts come first and volatile parts come last.
+Prompt cache của Anthropic hoạt động theo exact prefix matching. Nếu chỉ một token thay đổi giữa prefix, toàn bộ phần sau đó sẽ thành cache miss. Claude Code cấu trúc toàn bộ prompt sao cho phần ổn định ở trước và phần biến động ở sau.
 
-When `shouldUseGlobalCacheScope()` returns true, system prompt entries before the dynamic boundary get `scope: 'global'` -- two users running the same Claude Code version share the prefix cache. Global scope is disabled when MCP tools are present, since MCP schemas are per-user.
+Khi `shouldUseGlobalCacheScope()` trả về true, các mục system prompt trước dynamic boundary sẽ được gán `scope: 'global'` -- hai người dùng chạy cùng phiên bản Claude Code có thể chia sẻ prefix cache. Global scope bị tắt khi có MCP tools, vì MCP schema mang tính từng người dùng.
 
 ### Sticky Latch Fields
 
-Five boolean fields use a "sticky-on" pattern -- once true, they remain true for the session:
+Năm trường boolean dùng mẫu sticky-on (bật là dính) -- một khi đã true thì giữ true suốt phiên:
 
 | Latch Field | What It Prevents |
 |-------------|-----------------|
-| `promptCache1hEligible` | Mid-session overage flip changing cache TTL |
-| `afkModeHeaderLatched` | Shift+Tab toggles busting cache |
-| `fastModeHeaderLatched` | Cooldown enter/exit double-busting cache |
-| `cacheEditingHeaderLatched` | Mid-session config toggles busting cache |
-| `thinkingClearLatched` | Flipping thinking mode after confirmed cache miss |
+| `promptCache1hEligible` | Overage lật giữa phiên làm đổi cache TTL |
+| `afkModeHeaderLatched` | Bật/tắt Shift+Tab làm vỡ cache |
+| `fastModeHeaderLatched` | Vào/ra cooldown làm vỡ cache hai lần |
+| `cacheEditingHeaderLatched` | Bật/tắt config giữa phiên làm vỡ cache |
+| `thinkingClearLatched` | Đổi thinking mode sau khi đã xác nhận cache miss |
 
-Each corresponds to a header or parameter that, if changed mid-session, would bust ~50,000-70,000 tokens of cached prompt. The latches sacrifice mid-session toggling to preserve the cache.
+Mỗi trường tương ứng với một header hoặc tham số mà nếu đổi giữa phiên sẽ làm vỡ khoảng ~50.000-70.000 token prompt đã cache. Các latch chấp nhận hy sinh khả năng toggle giữa phiên để giữ cache.
 
 ### Memoized Session Date
 
@@ -110,33 +110,33 @@ Each corresponds to a header or parameter that, if changed mid-session, would bu
 const getSessionStartDate = memoize(getLocalISODate)
 ```
 
-Without this, the date would change at midnight, busting the entire cached prefix. A stale date is cosmetic; a cache bust reprocesses the entire conversation.
+Nếu không có dòng này, ngày sẽ đổi lúc nửa đêm và làm vỡ toàn bộ cached prefix. Ngày cũ thì chỉ ảnh hưởng bề mặt; cache bust thì phải xử lý lại toàn bộ hội thoại.
 
 ### Section Memoization
 
-System prompt sections use a two-tier cache. Most content uses `systemPromptSection(name, compute)`, cached until `/clear` or `/compact`. The nuclear option `DANGEROUS_uncachedSystemPromptSection(name, compute, reason)` recomputes every turn -- the naming convention forces developers to document WHY cache-breaking is necessary.
+Các section của system prompt dùng cache hai tầng. Phần lớn nội dung dùng `systemPromptSection(name, compute)`, được cache tới khi `/clear` hoặc `/compact`. Tùy chọn mạnh tay `DANGEROUS_uncachedSystemPromptSection(name, compute, reason)` sẽ tính lại mỗi lượt -- quy ước đặt tên này ép lập trình viên phải ghi rõ WHY việc phá cache là cần thiết.
 
 ---
 
 ## Saving CPU in Rendering
 
-Chapter 13 covered the rendering architecture in depth -- the packed typed arrays, pool-based interning, double buffering, and cell-level diffing. Here we focus on the performance measurements and adaptive behaviors that keep it fast.
+Chương 13 đã đi sâu vào kiến trúc rendering -- packed typed arrays, pool-based interning, double buffering, và cell-level diffing. Ở đây ta tập trung vào số đo hiệu năng và hành vi thích nghi giúp nó luôn nhanh.
 
-The terminal renderer throttles at 60fps via `throttle(deferredRender, FRAME_INTERVAL_MS)`. When the terminal is blurred, the interval doubles to 30fps. Scroll drain frames run at quarter interval for maximum scroll speed. This adaptive throttling ensures rendering never consumes more CPU than necessary.
+Terminal renderer throttle ở 60fps qua `throttle(deferredRender, FRAME_INTERVAL_MS)`. Khi terminal bị blur, chu kỳ tăng gấp đôi thành 30fps. Các scroll drain frame chạy ở một phần tư chu kỳ để đạt tốc độ cuộn tối đa. Cơ chế throttle thích nghi này đảm bảo rendering không bao giờ ăn nhiều CPU hơn mức cần thiết.
 
-The React Compiler (`react/compiler-runtime`) auto-memoizes component renders throughout the codebase. Manual `useMemo` and `useCallback` are error-prone; the compiler gets it right by construction. Pre-allocated frozen objects (`Object.freeze()`) eliminate allocations for common render-path values -- one allocation saved per frame in alt-screen mode compounds over thousands of frames.
+React Compiler (`react/compiler-runtime`) tự động memoize việc render component trên toàn codebase. Việc dùng tay `useMemo` và `useCallback` dễ sai; compiler làm đúng theo thiết kế. Các object đóng băng dựng sẵn (`Object.freeze()`) loại bỏ allocation cho các giá trị phổ biến trên render path -- tiết kiệm một allocation mỗi frame ở alt-screen mode sẽ cộng dồn qua hàng nghìn frame.
 
-For the full rendering pipeline details -- the `CharPool`/`StylePool`/`HyperlinkPool` interning system, the blit optimization, the damage rectangle tracking, the OffscreenFreeze component -- see Chapter 13.
+Để xem chi tiết đầy đủ của rendering pipeline -- hệ thống interning `CharPool`/`StylePool`/`HyperlinkPool`, tối ưu blit, theo dõi damage rectangle, component OffscreenFreeze -- xem Chương 13.
 
 ---
 
 ## Saving Memory and Time in Search
 
-The fuzzy file search runs on every keystroke, searching 270,000+ paths. Three optimization layers keep it under a few milliseconds.
+Fuzzy file search chạy ở mọi lần gõ phím, tìm trên hơn 270.000 đường dẫn. Ba lớp tối ưu giữ thời gian dưới vài mili giây.
 
 ### The Bitmap Pre-Filter
 
-Every indexed path gets a 26-bit bitmap of which lowercase letters it contains:
+Mỗi đường dẫn được index sẽ có một bitmap 26-bit biểu diễn các chữ cái thường mà nó chứa:
 
 ```typescript
 // Pseudocode — illustrates the 26-bit bitmap concept
@@ -150,56 +150,56 @@ function buildCharBitmap(filepath: string): number {
 }
 ```
 
-At search time: `if ((charBits[i] & needleBitmap) !== needleBitmap) continue`. Any path missing a query letter fails instantly -- one integer comparison, no string operations. Rejection rate: ~10% for broad queries like "test," 90%+ for queries with rare letters. Cost: 4 bytes per path, ~1MB for 270,000 paths.
+Ở thời điểm tìm: `if ((charBits[i] & needleBitmap) !== needleBitmap) continue`. Bất kỳ đường dẫn nào thiếu một ký tự trong truy vấn đều rớt ngay -- một phép so sánh số nguyên, không thao tác chuỗi. Tỷ lệ loại bỏ: ~10% cho truy vấn rộng như "test", và 90%+ cho truy vấn chứa ký tự hiếm. Chi phí: 4 byte mỗi đường dẫn, khoảng ~1MB cho 270.000 đường dẫn.
 
 ### Score-Bound Rejection and Fused indexOf Scan
 
-Paths surviving the bitmap face a score ceiling check before the expensive boundary/camelCase scoring. If the best-case score cannot beat the current top-K threshold, the path is skipped.
+Các đường dẫn qua được lớp bitmap sẽ bị kiểm tra score ceiling trước khi vào bước chấm điểm boundary/camelCase đắt đỏ. Nếu điểm tốt nhất có thể đạt vẫn không vượt ngưỡng top-K hiện tại, đường dẫn bị bỏ qua.
 
-The actual matching fuses position finding with gap/consecutive bonus computation using `String.indexOf()`, which is SIMD-accelerated in both JSC (Bun) and V8 (Node). The engine's optimized search is significantly faster than manual character loops.
+Khâu matching thực tế gộp luôn việc tìm vị trí với tính bonus khoảng cách/liền kề bằng `String.indexOf()`, vốn được SIMD-accelerated trong cả JSC (Bun) và V8 (Node). Bộ máy tìm kiếm đã tối ưu của engine nhanh hơn đáng kể so với vòng lặp ký tự viết tay.
 
 ### Async Indexing with Partial Queryability
 
-For large codebases, `loadFromFileListAsync()` yields to the event loop every ~4ms of work (time-based, not count-based -- adapting to machine speed). It returns two promises: `queryable` (resolves on first chunk, enabling immediate partial results) and `done` (full index complete). The user can start searching within 5-10ms of the file list becoming available.
+Với codebase lớn, `loadFromFileListAsync()` nhường lại event loop sau mỗi ~4ms công việc (dựa theo thời gian, không theo số lượng -- tự thích nghi với tốc độ máy). Nó trả về hai promise: `queryable` (resolve ở chunk đầu tiên, cho phép kết quả một phần ngay lập tức) và `done` (hoàn tất toàn bộ index). Người dùng có thể bắt đầu tìm trong 5-10ms sau khi danh sách file sẵn sàng.
 
-The yield check uses `(i & 0xff) === 0xff` -- a branchless modulo-256 to amortize the cost of `performance.now()`.
+Kiểm tra điểm nhường dùng `(i & 0xff) === 0xff` -- branchless modulo-256 để phân bổ chi phí gọi `performance.now()`.
 
 ---
 
 ## The Memory Relevance Side-Query
 
-One optimization sits at the intersection of token efficiency and API cost. As described in Chapter 11, the memory system uses a lightweight Sonnet model call -- not the main Opus model -- to select which memory files to include. The cost (256 max output tokens on a fast model) is negligible compared to the tokens saved by not including irrelevant memory files. A single irrelevant 2,000-token memory costs more in wasted context than the side query costs in API calls.
+Một tối ưu nằm ở giao điểm giữa token efficiency và API cost. Như đã mô tả ở Chương 11, hệ thống memory dùng một lệnh gọi model Sonnet nhẹ -- không dùng model Opus chính -- để chọn các file memory cần đưa vào. Chi phí (tối đa 256 output token trên model nhanh) là không đáng kể so với số token tiết kiệm được khi không đưa file memory không liên quan. Chỉ một file memory 2.000 token không liên quan đã tốn context lãng phí nhiều hơn cả chi phí API của side query.
 
 ---
 
 ## Speculative Tool Execution
 
-The `StreamingToolExecutor` begins executing tools as they stream in, before the full response completes. Read-only tools (Glob, Grep, Read) can execute in parallel; write tools require exclusive access. The `partitionToolCalls()` function groups consecutive safe tools into batches: [Read, Read, Grep, Edit, Read, Read] becomes three batches -- [Read, Read, Grep] concurrent, [Edit] serial, [Read, Read] concurrent.
+`StreamingToolExecutor` bắt đầu chạy tool ngay khi chúng được stream tới, trước khi toàn bộ response hoàn tất. Tool chỉ đọc (Glob, Grep, Read) có thể chạy song song; tool ghi cần quyền truy cập độc quyền. Hàm `partitionToolCalls()` nhóm các tool an toàn liên tiếp thành từng batch: [Read, Read, Grep, Edit, Read, Read] thành ba batch -- [Read, Read, Grep] chạy đồng thời, [Edit] tuần tự, [Read, Read] đồng thời.
 
-Results are always yielded in the original tool order for deterministic model reasoning. A sibling abort controller kills parallel subprocesses when a Bash tool errors, preventing resource waste.
+Kết quả luôn được yield theo đúng thứ tự tool ban đầu để model suy luận một cách xác định. Một sibling abort controller sẽ hủy các subprocess song song khi Bash tool lỗi, tránh lãng phí tài nguyên.
 
 ---
 
 ## Streaming and the Raw API
 
-Claude Code uses the raw streaming API instead of the SDK's `BetaMessageStream` helper. The helper calls `partialParse()` on every `input_json_delta` -- O(n^2) in tool input length. Claude Code accumulates raw strings and parses once when the block is complete.
+Claude Code dùng raw streaming API thay vì helper `BetaMessageStream` của SDK. Helper này gọi `partialParse()` ở mọi `input_json_delta` -- độ phức tạp O(n^2) theo độ dài input của tool. Claude Code tích lũy chuỗi thô và parse một lần khi block hoàn tất.
 
-A streaming watchdog (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90 seconds) aborts and retries if no chunks arrive, with fallback to non-streaming `messages.create()` on proxy failure.
+Một streaming watchdog (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, mặc định 90 giây) sẽ abort và retry nếu không có chunk nào đến, đồng thời fallback sang `messages.create()` không stream khi proxy lỗi.
 
 ---
 
 ## Apply This: Performance for Agentic Systems
 
-**Audit your context window budget.** The gap between your `max_output_tokens` reservation and your actual p99 output length is wasted context. Set a tight default and escalate on truncation.
+**Audit ngân sách context window của bạn.** Độ chênh giữa phần dự trữ `max_output_tokens` và độ dài output p99 thực tế chính là context lãng phí. Đặt mặc định chặt và chỉ tăng khi gặp truncation.
 
-**Design for cache stability.** Every field in your prompt is stable or volatile. Put stable first, volatile last. Treat any mid-conversation change to the stable prefix as a bug with a dollar cost.
+**Thiết kế cho cache stability.** Mọi trường trong prompt của bạn hoặc là ổn định hoặc là biến động. Đặt phần ổn định trước, phần biến động sau. Hãy coi mọi thay đổi giữa hội thoại lên stable prefix là bug có chi phí tiền thật.
 
-**Parallelize startup I/O.** Module loading is CPU-bound. Keychain reads and network handshakes are I/O-bound. Launch I/O before imports.
+**Song song hóa I/O lúc startup.** Nạp module là CPU-bound. Đọc keychain và bắt tay mạng là I/O-bound. Hãy khởi chạy I/O trước import.
 
-**Use bitmap pre-filters for search.** A cheap pre-filter rejecting 10-90% of candidates before expensive scoring is a significant win at 4 bytes per entry.
+**Dùng bitmap pre-filter cho search.** Một lớp pre-filter rẻ loại 10-90% ứng viên trước bước chấm điểm đắt là lợi ích lớn với chi phí chỉ 4 byte mỗi phần tử.
 
-**Measure where it matters.** Claude Code has 50+ startup checkpoints, sampled at 100% internally and 0.5% externally. Performance work without measurement is guesswork.
+**Đo nơi thật sự quan trọng.** Claude Code có hơn 50 startup checkpoints, lấy mẫu 100% nội bộ và 0.5% bên ngoài. Làm hiệu năng mà không đo đạc thì chỉ là đoán mò.
 
 ---
 
-A final observation: most of these optimizations are not algorithmically sophisticated. Bitmap pre-filters, circular buffers, memoization, interning -- these are CS fundamentals. The sophistication is in knowing where to apply them. The startup profiler tells you where the milliseconds are. The API usage field tells you where the tokens are. The cache hit rate tells you where the money is. Measurement first, optimization second, always.
+Một quan sát cuối: phần lớn các tối ưu này không hề tinh vi về mặt thuật toán. Bitmap pre-filter, circular buffers, memoization, interning -- đây đều là nền tảng khoa học máy tính. Sự tinh vi nằm ở chỗ biết áp dụng chúng ở đâu. Startup profiler cho bạn biết mili giây nằm ở đâu. Trường API usage cho bạn biết token nằm ở đâu. Cache hit rate cho bạn biết tiền nằm ở đâu. Đo trước, tối ưu sau, luôn luôn.

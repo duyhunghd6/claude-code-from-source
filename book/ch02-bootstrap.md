@@ -1,18 +1,18 @@
-# Chapter 2: Starting Fast -- The Bootstrap Pipeline
+# Chương 2: Khởi động nhanh -- Bootstrap Pipeline
 
-If Chapter 1 gave you the map of Claude Code's architecture, this chapter gives you the route it takes to reach a working state. Every component from the six abstractions -- the query loop, the tool system, the state layers, hooks, memory -- must be initialized before the user sees a cursor. The budget for all of it: 300 milliseconds.
+Nếu Chương 1 đưa cho bạn bản đồ kiến trúc của Claude Code, thì chương này đưa cho bạn tuyến đường nó đi để vào trạng thái sẵn sàng hoạt động. Mọi thành phần trong sáu abstraction -- query loop, tool system, state layers, hooks, memory -- đều phải được khởi tạo trước khi người dùng nhìn thấy con trỏ. Ngân sách cho toàn bộ việc đó: 300 milliseconds.
 
-Three hundred milliseconds is the threshold where humans perceive a tool as instant. Cross it, and the CLI feels sluggish. Miss it by a lot, and developers stop using it. Everything in this chapter exists to stay under that line.
+Ba trăm milliseconds là ngưỡng mà con người cảm nhận công cụ là tức thì. Vượt ngưỡng đó, CLI bắt đầu cho cảm giác ì ạch. Trượt xa hơn nữa, lập trình viên sẽ bỏ dùng. Mọi thứ trong chương này tồn tại để giữ hệ thống dưới ranh giới đó.
 
-Bootstrap must accomplish four things: validate the environment, establish security boundaries, configure the communication layer, and render the UI. It must do all four in under 300ms. The architectural insight is that these four jobs can be partially overlapped, carefully ordered, and aggressively pruned to fit inside a budget that feels impossible for a system this complex.
+Bootstrap phải làm xong bốn việc: kiểm tra môi trường, dựng security boundaries, cấu hình communication layer, và render UI. Tất cả phải hoàn tất trong dưới 300ms. Insight kiến trúc ở đây là bốn việc này có thể chồng lấp một phần, được sắp thứ tự cẩn thận, và cắt tỉa quyết liệt để nhét vừa một ngân sách nghe có vẻ bất khả thi với một hệ thống phức tạp như vậy.
 
-A note on methodology: the timestamps in this chapter are approximate, derived from the codebase's own profiling checkpoints. They represent typical warm-start timings on modern hardware. Cold starts are slower. The absolute numbers matter less than the relative structure: which operations overlap, which block, and which are deferred.
+Một lưu ý về phương pháp: các mốc thời gian trong chương này là xấp xỉ, suy ra từ chính startup profiling checkpoints của codebase. Chúng đại diện cho warm-start timings điển hình trên phần cứng hiện đại. Cold starts sẽ chậm hơn. Con số tuyệt đối không quan trọng bằng cấu trúc tương đối: thao tác nào chồng lấp, thao tác nào chặn, và thao tác nào được trì hoãn.
 
 ---
 
-## The Shape of the Pipeline
+## Hình dạng của Pipeline
 
-The startup pipeline lives in five files, executed in sequence. Each file narrows the scope of what the system needs to do next:
+Startup pipeline nằm trong năm file, được thực thi tuần tự. Mỗi file thu hẹp phạm vi việc hệ thống cần làm tiếp theo:
 
 ```mermaid
 flowchart TD
@@ -26,23 +26,23 @@ flowchart TD
     style REPL fill:#9f9,stroke:#333
 ```
 
-Each file does the minimum work necessary before passing control to the next. `cli.tsx` tries to exit before importing anything heavy. `main.tsx` fires slow operations as side effects during import evaluation. `init.ts` resolves configuration and establishes the trust boundary. `setup.ts` registers capabilities. `replLauncher.ts` picks the right entry point and starts the UI.
+Mỗi file chỉ làm lượng việc tối thiểu cần thiết trước khi chuyển quyền điều khiển sang file kế tiếp. `cli.tsx` cố thoát trước khi import bất cứ thứ nặng nào. `main.tsx` kích hoạt thao tác chậm như side effects ngay trong lúc import evaluation. `init.ts` phân giải cấu hình và thiết lập trust boundary. `setup.ts` đăng ký capabilities. `replLauncher.ts` chọn entry point phù hợp rồi khởi chạy UI.
 
-Three parallelism strategies make this fast:
+Ba chiến lược parallelism làm việc này nhanh:
 
-1. **Module-level subprocess dispatch.** Fire keychain and MDM reads as side effects *during import evaluation*. The subprocesses run while the remaining ~135ms of static imports load.
-2. **Promise parallelism in setup.** Socket binding, hook snapshotting, command loading, and agent definition loading all run concurrently.
-3. **Post-render deferred prefetches.** Everything the user does not need before typing their first message -- git status, model capabilities, AWS credentials -- runs after the prompt is visible.
+1. **Module-level subprocess dispatch.** Kích hoạt đọc keychain và MDM như side effects *trong lúc import evaluation*. Các subprocess chạy trong khi ~135ms static imports còn lại đang tải.
+2. **Promise parallelism in setup.** Socket binding, hook snapshotting, command loading, và agent definition loading đều chạy đồng thời.
+3. **Post-render deferred prefetches.** Mọi thứ người dùng chưa cần trước khi gõ tin nhắn đầu tiên -- git status, model capabilities, AWS credentials -- sẽ chạy sau khi prompt đã hiện.
 
-A fourth strategy is less visible but equally important: **dynamic imports to defer module evaluation**. The codebase uses `await import('./module.js')` in at least a dozen places to avoid loading code until it is needed. OpenTelemetry (400KB + 700KB gRPC) loads only when telemetry initializes. React components load only when rendering. Each dynamic import trades cold-path latency (first use triggers module evaluation) for hot-path speed (startup does not pay for modules it might never use).
+Chiến lược thứ tư ít lộ rõ hơn nhưng quan trọng ngang nhau: **dynamic imports to defer module evaluation**. Codebase dùng `await import('./module.js')` ở ít nhất cả tá vị trí để tránh tải code cho tới khi thực sự cần. OpenTelemetry (400KB + 700KB gRPC) chỉ tải khi telemetry khởi tạo. React components chỉ tải khi render. Mỗi dynamic import đánh đổi cold-path latency (lần dùng đầu sẽ kích hoạt module evaluation) lấy hot-path speed (startup không phải trả chi phí cho các module có thể chẳng bao giờ dùng).
 
 ---
 
 ## Phase 0: Fast-Path Dispatch (cli.tsx)
 
-The first file the process enters, `cli.tsx`, has one job: determine whether the full bootstrap pipeline is needed at all. Many invocations -- `claude --version`, `claude --help`, `claude mcp list` -- need a specific answer and nothing else. Loading React, initializing telemetry, reading the keychain, and setting up the tool system would be pure waste.
+File đầu tiên process đi vào, `cli.tsx`, có một nhiệm vụ: xác định có thật sự cần full bootstrap pipeline hay không. Nhiều lần gọi -- `claude --version`, `claude --help`, `claude mcp list` -- chỉ cần một câu trả lời cụ thể và không cần gì thêm. Tải React, khởi tạo telemetry, đọc keychain, và dựng tool system trong các trường hợp đó chỉ là lãng phí.
 
-The pattern is: check `argv`, dynamically import only the handler you need, and exit before the rest of the system loads.
+Pattern ở đây là: kiểm tra `argv`, dynamic import đúng handler cần dùng, và thoát trước khi phần còn lại của hệ thống tải.
 
 ```typescript
 // Pseudocode for the fast-path pattern
@@ -53,17 +53,17 @@ if (args.length === 1 && args[0] === '--version') {
 }
 ```
 
-There are roughly a dozen fast paths covering version, help, configuration, MCP server management, and update checks. The specifics do not matter -- the pattern does. Each path dynamically imports exactly one module, calls one function, and exits. The rest of the codebase never loads.
+Có khoảng một tá fast paths bao phủ version, help, configuration, MCP server management, và update checks. Chi tiết cụ thể không quan trọng -- pattern mới quan trọng. Mỗi path dynamic import đúng một module, gọi một hàm, rồi thoát. Phần còn lại của codebase không bao giờ tải.
 
-This is the first instance of a principle that recurs throughout bootstrap: **do less by knowing more about intent**. The argv array reveals the user's intent. If the intent is narrow, the execution path should be narrow too.
+Đây là lần xuất hiện đầu tiên của một nguyên tắc sẽ lặp lại xuyên suốt bootstrap: **do less by knowing more about intent**. Mảng argv tiết lộ ý định của người dùng. Nếu ý định hẹp, execution path cũng phải hẹp.
 
-If no fast path matches, `cli.tsx` falls through to the full `main.tsx` import, and the real startup begins.
+Nếu không fast path nào khớp, `cli.tsx` sẽ rơi xuống import đầy đủ `main.tsx`, và startup thực sự bắt đầu.
 
 ---
 
 ## Phase 1: Module-Level I/O (main.tsx)
 
-When `main.tsx` is imported, its module-level side effects fire during evaluation -- before any function in the file is called. This is the most performance-critical technique in the entire bootstrap:
+Khi `main.tsx` được import, module-level side effects của nó chạy ngay trong lúc evaluation -- trước khi bất kỳ hàm nào trong file được gọi. Đây là kỹ thuật quan trọng nhất về performance trong toàn bộ bootstrap:
 
 ```typescript
 // These run at import time, not at call time
@@ -71,23 +71,23 @@ const mdmPromise = startMDMSubprocess()
 const keychainPromise = readKeychainCredentials()
 ```
 
-While the JavaScript engine evaluates the rest of `main.tsx` and its transitive imports (~138ms of module evaluation), these two promises are already in flight. The MDM (Mobile Device Management) subprocess checks organizational security policies. The keychain read fetches stored credentials. Both are I/O-bound operations that would otherwise serialize on the critical path.
+Trong khi JavaScript engine evaluate phần còn lại của `main.tsx` và toàn bộ transitive imports (~138ms module evaluation), hai promise này đã chạy nền. Subprocess MDM (Mobile Device Management) kiểm tra chính sách security của tổ chức. Lần đọc keychain lấy credentials đã lưu. Cả hai đều là thao tác I/O-bound mà nếu không sẽ bị tuần tự hóa trên critical path.
 
-The insight: module evaluation is not idle time -- it is time you can overlap with I/O. By the time `main.tsx`'s exported functions are first called, these promises are often already resolved.
+Insight: module evaluation không phải thời gian rỗi -- đó là thời gian bạn có thể chồng lấp với I/O. Tới lúc các hàm export của `main.tsx` được gọi lần đầu, các promise này thường đã resolve xong.
 
-This technique requires suppressing ESLint's top-level-await and side-effect-in-module-scope rules in the relevant files. The codebase has a custom ESLint rule specifically for `process.env` access patterns that allows controlled side effects at module scope while preventing uncontrolled ones elsewhere.
+Kỹ thuật này đòi hỏi tắt các rule của ESLint về top-level-await và side-effect-in-module-scope trong các file liên quan. Codebase có một custom ESLint rule dành riêng cho mẫu truy cập `process.env`, cho phép side effects có kiểm soát ở module scope nhưng ngăn side effects không kiểm soát ở nơi khác.
 
 ---
 
 ## Phase 2: Parse and Trust (init.ts)
 
-The `init()` function is memoized -- calling it multiple times is safe and returns the same result. This is important because multiple entry points (the REPL, print mode, SDK mode) may each call `init()`, and the memoization guarantees it runs exactly once.
+Hàm `init()` được memoize -- gọi nhiều lần vẫn an toàn và trả cùng kết quả. Điều này quan trọng vì nhiều entry points (REPL, print mode, SDK mode) có thể đều gọi `init()`, và memoization đảm bảo nó chỉ chạy đúng một lần.
 
-The function resolves command-line arguments via Commander, loads configuration from multiple sources (global settings, project settings, environment variables), and then hits the most important boundary in the pipeline.
+Hàm này phân giải command-line arguments qua Commander, tải cấu hình từ nhiều nguồn (global settings, project settings, environment variables), rồi chạm vào boundary quan trọng nhất trong pipeline.
 
 ### The Trust Boundary
 
-Before the trust boundary, the system operates in a restricted mode. After it, full capabilities are available. The boundary exists because Claude Code reads environment variables -- and environment variables can be poisoned.
+Trước trust boundary, hệ thống chạy ở chế độ hạn chế. Sau trust boundary, full capabilities mới khả dụng. Boundary này tồn tại vì Claude Code đọc environment variables -- mà environment variables có thể bị đầu độc.
 
 ```mermaid
 sequenceDiagram
@@ -112,13 +112,13 @@ sequenceDiagram
     S->>S: Reset feature flags
 ```
 
-The trust boundary is not about the user trusting Claude Code. It is about Claude Code trusting the *environment*. A malicious `.bashrc` could set `LD_PRELOAD` to inject code into every subprocess. The trust dialog ensures the user explicitly consents to operating in a directory that may have been configured by someone else.
+Trust boundary không phải việc người dùng tin Claude Code. Nó là việc Claude Code tin *môi trường*. Một `.bashrc` độc hại có thể đặt `LD_PRELOAD` để chèn code vào mọi subprocess. Trust dialog đảm bảo người dùng chủ động đồng ý vận hành trong một thư mục có thể đã được người khác cấu hình.
 
-The system has ten distinct trust-sensitive operations. Before the user accepts the trust dialog, only safe operations run: TLS certificate configuration, theme preferences, telemetry opt-out. After trust, the system reads potentially dangerous environment variables (PATH, LD_PRELOAD, NODE_OPTIONS), executes git commands, and applies the full environment configuration.
+Hệ thống có mười thao tác trust-sensitive riêng biệt. Trước khi người dùng chấp nhận trust dialog, chỉ các thao tác an toàn được chạy: cấu hình TLS certificate, theme preferences, telemetry opt-out. Sau trust, hệ thống đọc các environment variables có khả năng nguy hiểm (PATH, LD_PRELOAD, NODE_OPTIONS), thực thi git commands, và áp dụng full environment configuration.
 
 ### The preAction Hook
 
-Commander's `preAction` hook is the architectural linchpin. Commander parses the command structure (flags, subcommands, positional arguments) *without* executing anything. The `preAction` hook fires after parsing but before the matched command handler runs:
+`preAction` hook của Commander là điểm tựa kiến trúc then chốt. Commander parse command structure (flags, subcommands, positional arguments) *mà chưa thực thi gì*. `preAction` hook chạy sau parse nhưng trước khi command handler được chọn bắt đầu chạy:
 
 ```typescript
 program.hook('preAction', async (thisCommand) => {
@@ -126,13 +126,13 @@ program.hook('preAction', async (thisCommand) => {
 })
 ```
 
-This separation means fast-path commands (handled in `cli.tsx` before Commander loads) never pay the `init()` cost. Only commands that need the full environment trigger initialization.
+Sự tách biệt này có nghĩa là fast-path commands (được xử lý trong `cli.tsx` trước khi Commander tải) không bao giờ phải trả chi phí `init()`. Chỉ commands cần full environment mới kích hoạt initialization.
 
 ---
 
 ## Phase 3: Setup (setup.ts)
 
-After `init()` completes, `setup()` registers all the capabilities the system needs:
+Sau khi `init()` hoàn tất, `setup()` đăng ký toàn bộ capabilities mà hệ thống cần:
 
 ```mermaid
 gantt
@@ -149,29 +149,29 @@ gantt
     MCP server connections :5, 25
 ```
 
-Commands, agents, hooks, and plugins all register in parallel where possible. The setup phase is where the system transitions from "I know my configuration" to "I have all my capabilities." After setup, every tool is registered, every hook is wired, and the system is ready to handle user input.
+Commands, agents, hooks, và plugins đều đăng ký song song ở nơi có thể. Setup phase là lúc hệ thống chuyển từ "tôi biết cấu hình của mình" sang "tôi có đầy đủ capabilities". Sau setup, mọi tool đã đăng ký, mọi hook đã nối dây, và hệ thống sẵn sàng xử lý input của người dùng.
 
-Setup also handles the security hook snapshot. The hook configuration is read from disk once, frozen into an immutable snapshot, and used for the rest of the session. Later modifications to the hooks configuration file on disk are ignored. This prevents an attacker from modifying hook rules after the session starts -- the frozen snapshot is the only source of truth for permission decisions.
+Setup cũng xử lý security hook snapshot. Cấu hình hook được đọc từ đĩa một lần, đóng băng thành immutable snapshot, và dùng cho toàn bộ phần còn lại của session. Các thay đổi sau đó vào file cấu hình hooks trên đĩa sẽ bị bỏ qua. Cơ chế này ngăn kẻ tấn công sửa hook rules sau khi session bắt đầu -- frozen snapshot là source of truth duy nhất cho quyết định permission.
 
 ---
 
 ## Phase 4: Launch (replLauncher.ts)
 
-Seven different code paths converge on `replLauncher.ts`: interactive REPL, print mode (`--print`), SDK mode, resume (`--resume`), continue (`--continue`), pipe mode, and headless. The launcher inspects the configuration produced by `init()` and dispatches to the right entry point.
+Bảy code paths khác nhau hội tụ vào `replLauncher.ts`: interactive REPL, print mode (`--print`), SDK mode, resume (`--resume`), continue (`--continue`), pipe mode, và headless. Launcher kiểm tra cấu hình do `init()` tạo ra rồi dispatch tới entry point đúng.
 
-Two examples illustrate the range:
+Hai ví dụ cho thấy dải khác biệt:
 
-**Interactive REPL** -- the standard case. The launcher mounts the React/Ink component tree, starts the terminal renderer, and enters the event loop. The user sees a prompt and can start typing.
+**Interactive REPL** -- trường hợp tiêu chuẩn. Launcher mount cây component React/Ink, khởi động terminal renderer, và vào event loop. Người dùng thấy prompt và có thể bắt đầu gõ.
 
-**Print mode** (`--print`) -- a single prompt from argv. The launcher creates a headless query loop with no React tree, runs it to completion, streams the output to stdout, and exits. Same agent loop, different presentation.
+**Print mode** (`--print`) -- một prompt đơn từ argv. Launcher tạo headless query loop không có React tree, chạy đến khi xong, stream output ra stdout, rồi thoát. Cùng agent loop, khác cách trình bày.
 
-The important detail: all seven paths eventually call `query()` -- the same agent loop from Chapter 1. The launch path determines *how* the loop is presented (interactive terminal, single-shot, SDK protocol), not *what* it does. This convergence is what makes the architecture testable and predictable: regardless of how the user invokes Claude Code, the core behavior is identical.
+Chi tiết quan trọng: cả bảy paths cuối cùng đều gọi `query()` -- cùng agent loop từ Chương 1. Launch path quyết định *cách* loop được trình bày (interactive terminal, single-shot, SDK protocol), không quyết định *nó làm gì*. Điểm hội tụ này làm kiến trúc dễ test và dễ dự đoán: bất kể người dùng gọi Claude Code theo cách nào, hành vi lõi vẫn giống nhau.
 
 ---
 
 ## The Startup Timeline
 
-Here is what the full pipeline looks like in time:
+Đây là hình dạng của full pipeline theo trục thời gian:
 
 ```mermaid
 gantt
@@ -200,7 +200,7 @@ gantt
     First render             :215, 240
 ```
 
-The critical path runs through module evaluation (the single longest phase at ~138ms), then Commander parse, init, and setup. The parallel I/O operations (MDM, keychain) overlap with module evaluation and are typically resolved before they are needed.
+Critical path đi qua module evaluation (phase dài nhất ở ~138ms), sau đó là Commander parse, init, và setup. Các thao tác parallel I/O (MDM, keychain) chồng lấp với module evaluation và thường resolve trước lúc cần dùng.
 
 ### The Performance Budget
 
@@ -214,40 +214,40 @@ The critical path runs through module evaluation (the single longest phase at ~1
 | Launch + first render | ~25ms | Pick path, mount React, first paint |
 | **Total** | **~240ms** | Under 300ms budget |
 
-The total is approximately 240ms on a modern machine -- 60ms of headroom under the 300ms budget. Cold starts (first run after reboot, OS cache empty) can push module evaluation to 200ms+, bringing the total closer to the limit.
+Tổng thời gian xấp xỉ 240ms trên máy hiện đại -- còn 60ms headroom dưới ngân sách 300ms. Cold starts (lần chạy đầu sau reboot, khi OS cache trống) có thể đẩy module evaluation lên 200ms+, khiến tổng thời gian tiến gần giới hạn.
 
 ---
 
 ## The Migration System
 
-A brief note on one subsystem that runs during init: schema migrations. Claude Code stores configuration and session data in local files and directories. When the format changes between versions, migrations run automatically at startup.
+Một lưu ý ngắn về một subsystem chạy trong init: schema migrations. Claude Code lưu configuration và session data trong file/thư mục cục bộ. Khi format thay đổi giữa các phiên bản, migrations sẽ tự chạy lúc startup.
 
-Each migration is a function with a version number. The system checks the current schema version against the highest migration version, runs pending migrations in order, and updates the version. Migrations are idempotent and fast (operating on small local files, not databases). The entire migration pass typically completes in under 5ms. If a migration fails, it logs the error and continues -- availability beats strict consistency for local configuration.
+Mỗi migration là một hàm có version number. Hệ thống so schema version hiện tại với migration version cao nhất, chạy các migration còn thiếu theo thứ tự, rồi cập nhật version. Migrations có tính idempotent và nhanh (chạy trên file cục bộ nhỏ, không phải database). Toàn bộ lượt migration thường xong trong dưới 5ms. Nếu một migration thất bại, hệ thống log lỗi rồi tiếp tục -- availability quan trọng hơn strict consistency cho cấu hình cục bộ.
 
 ---
 
 ## What Startup Teaches About System Design
 
-The bootstrap pipeline is a study in narrowing scopes. Each phase reduces the space of possibilities:
+Bootstrap pipeline là một nghiên cứu về thu hẹp phạm vi. Mỗi phase giảm không gian khả năng:
 
-- Phase 0 narrows from "any CLI invocation" to "needs full bootstrap"
-- Phase 1 narrows from "everything must load" to "load in parallel with I/O"
-- Phase 2 narrows from "unknown environment" to "trusted, configured environment"
-- Phase 3 narrows from "no capabilities" to "fully registered"
-- Phase 4 narrows from "seven possible modes" to "one concrete launch path"
+- Phase 0 thu hẹp từ "mọi lần gọi CLI" xuống "cần full bootstrap"
+- Phase 1 thu hẹp từ "mọi thứ đều phải tải" xuống "tải song song với I/O"
+- Phase 2 thu hẹp từ "môi trường chưa rõ" xuống "môi trường đã tin cậy và đã cấu hình"
+- Phase 3 thu hẹp từ "chưa có capabilities" xuống "đã đăng ký đầy đủ"
+- Phase 4 thu hẹp từ "bảy mode khả dĩ" xuống "một launch path cụ thể"
 
-By the time the REPL renders, every decision has been made. The query loop receives a fully configured environment with no ambiguity about what mode it is in, which tools are available, or what permissions apply. The 300ms budget is not just a performance target -- it is a forcing function that prevents bootstrap from becoming a lazy initialization system where decisions are deferred and scattered throughout the codebase.
+Đến lúc REPL render, mọi quyết định đã được chốt. Query loop nhận một môi trường đã cấu hình đầy đủ, không còn mơ hồ về mode hiện tại, tool nào khả dụng, hay permission nào đang áp dụng. Ngân sách 300ms không chỉ là mục tiêu performance -- nó là forcing function ngăn bootstrap biến thành một lazy initialization system, nơi quyết định bị trì hoãn và rải rác khắp codebase.
 
 ---
 
 ## Apply This
 
-**Overlap I/O with initialization.** Fire slow operations (subprocess spawns, credential reads, network checks) at module evaluation time, before they are needed. The JavaScript engine is doing synchronous work anyway -- use that time for parallel I/O. The pattern: `const promise = startSlowThing()` at the top of the file, `await promise` at the point of use.
+**Overlap I/O with initialization.** Kích hoạt các thao tác chậm (spawn subprocess, đọc credentials, kiểm tra mạng) ngay ở thời điểm module evaluation, trước khi chúng được cần tới. JavaScript engine vốn đang làm việc đồng bộ -- hãy tận dụng khoảng thời gian đó cho parallel I/O. Pattern: `const promise = startSlowThing()` ở đầu file, `await promise` tại điểm sử dụng.
 
-**Narrow scope as early as possible.** The bootstrap pipeline's five files form a funnel: each phase eliminates work that subsequent phases do not need to do. Fast-path dispatch is the most dramatic example, but the principle applies everywhere. If you can determine at parse time that a code path is unnecessary, skip it.
+**Narrow scope as early as possible.** Năm file của bootstrap pipeline tạo thành một cái phễu: mỗi phase loại bỏ công việc mà phase sau không cần làm. Fast-path dispatch là ví dụ rõ nhất, nhưng nguyên tắc áp dụng ở mọi nơi. Nếu bạn xác định được ngay từ parse time rằng một code path là không cần thiết, hãy bỏ nó.
 
-**Establish trust boundaries explicitly.** If your application reads from an environment it does not control (environment variables, configuration files, shell settings), draw a clear line between "safe to read before the user consents" and "only read after consent." The trust boundary prevents a class of attacks where a malicious environment poisons the application before the user has a chance to evaluate it.
+**Establish trust boundaries explicitly.** Nếu ứng dụng của bạn đọc từ môi trường mà nó không kiểm soát (environment variables, configuration files, shell settings), hãy vẽ một ranh giới rõ ràng giữa "an toàn để đọc trước khi người dùng đồng ý" và "chỉ đọc sau khi có đồng ý". Trust boundary ngăn một lớp tấn công trong đó môi trường độc hại đầu độc ứng dụng trước khi người dùng có cơ hội đánh giá.
 
-**Memoize your init function.** Make initialization idempotent -- calling it twice produces the same result. This eliminates ordering bugs when multiple entry points may each trigger initialization. The memoization pattern is trivial but eliminates an entire class of double-initialization bugs.
+**Memoize your init function.** Hãy làm initialization idempotent -- gọi hai lần cho cùng kết quả. Cách này loại bỏ lỗi thứ tự khi nhiều entry points có thể cùng kích hoạt khởi tạo. Memoization pattern rất đơn giản nhưng loại bỏ trọn một lớp lỗi double-initialization.
 
-**Capture early input before yielding.** In an event-driven system, user input that arrives during initialization can be lost. Claude Code captures the initial prompt from argv before any async work begins, ensuring that `claude "fix the bug"` does not drop the prompt if initialization takes longer than expected.
+**Capture early input before yielding.** Trong một event-driven system, input người dùng đến trong lúc initialization có thể bị rơi mất. Claude Code thu prompt ban đầu từ argv trước khi bất kỳ công việc async nào bắt đầu, đảm bảo `claude "fix the bug"` không làm rớt prompt nếu initialization kéo dài hơn dự kiến.

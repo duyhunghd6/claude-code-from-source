@@ -1,22 +1,22 @@
-# Chapter 7: Concurrent Tool Execution
+# Chương 7: Thực thi Công cụ Đồng thời
 
-## The Cost of Waiting
+## Cái Giá Của Việc Chờ
 
-Chapter 6 traced the lifecycle of a single tool call -- from the raw `tool_use` block in the API response through input validation, permission checks, execution, and result formatting. That pipeline handles one tool. But the model rarely requests just one.
+Chương 6 đã lần theo vòng đời của một lệnh gọi công cụ đơn lẻ -- từ khối `tool_use` thô trong phản hồi API, qua xác thực đầu vào, kiểm tra quyền, thực thi, và định dạng kết quả. Pipeline đó xử lý một công cụ. Nhưng mô hình hiếm khi chỉ yêu cầu một.
 
-A typical Claude Code interaction involves three to five tool calls per turn. "Read these two files, grep for this pattern, then edit this function." The model emits all of those in a single response. If each tool takes 200 milliseconds, running them sequentially costs a full second. If the Read and Grep calls are independent -- and they are -- running them in parallel cuts that to 200 milliseconds. Five-to-one improvement, free.
+Một tương tác Claude Code điển hình bao gồm ba đến năm lệnh gọi công cụ mỗi lượt. "Đọc hai file này, grep mẫu này, rồi sửa hàm này." Mô hình phát toàn bộ các yêu cầu đó trong một phản hồi duy nhất. Nếu mỗi công cụ mất 200 mili giây, chạy tuần tự sẽ tốn trọn một giây. Nếu các lệnh gọi Read và Grep độc lập -- và đúng là như vậy -- chạy song song cắt xuống còn 200 mili giây. Cải thiện năm-trên-một, miễn phí.
 
-But not all tools are independent. An Edit that modifies `config.ts` cannot run concurrently with another Edit that modifies `config.ts`. A Bash command that creates a directory must complete before a Bash command that writes a file into that directory. Concurrency is not a global property of a tool. It is a property of a specific tool invocation with specific inputs.
+Nhưng không phải mọi công cụ đều độc lập. Một lệnh Edit sửa `config.ts` không thể chạy đồng thời với một lệnh Edit khác cũng sửa `config.ts`. Một lệnh Bash tạo thư mục phải hoàn tất trước lệnh Bash ghi file vào thư mục đó. Đồng thời hóa không phải thuộc tính toàn cục của một công cụ. Nó là thuộc tính của một lần gọi công cụ cụ thể với đầu vào cụ thể.
 
-This is the insight that drives the entire concurrency system: **safety is per-call, not per-tool-type**. `Bash("ls -la")` is safe to parallelize. `Bash("rm -rf build/")` is not. The same tool, different inputs, different concurrency classification. The system must inspect the input before deciding.
+Đây là insight dẫn dắt toàn bộ hệ thống đồng thời: **safety là theo từng lệnh gọi, không theo loại công cụ**. `Bash("ls -la")` an toàn để song song hóa. `Bash("rm -rf build/")` thì không. Cùng một công cụ, đầu vào khác nhau, phân loại đồng thời khác nhau. Hệ thống phải kiểm tra đầu vào trước khi quyết định.
 
-Claude Code implements two layers of concurrency optimization. The first is **batch orchestration**: after the model's response is fully received, partition the tool calls into concurrent and serial groups, then execute each group appropriately. The second is **speculative execution**: start running tools *while the model is still streaming its response*, harvesting results before the response is even complete. Together, these two mechanisms eliminate most of the wall-clock time that would otherwise be spent waiting.
+Claude Code triển khai hai lớp tối ưu đồng thời. Lớp thứ nhất là **batch orchestration** (điều phối theo lô): sau khi phản hồi của mô hình được nhận đầy đủ, phân hoạch các lệnh gọi công cụ thành nhóm đồng thời và nhóm tuần tự, rồi thực thi từng nhóm theo cách phù hợp. Lớp thứ hai là **speculative execution** (thực thi suy đoán): bắt đầu chạy công cụ *khi mô hình vẫn đang stream phản hồi*, thu hoạch kết quả trước cả khi phản hồi hoàn tất. Kết hợp lại, hai cơ chế này loại bỏ phần lớn thời gian treo tường vốn bị mất vì chờ đợi.
 
 ---
 
-## The Partition Algorithm
+## Thuật Toán Phân Hoạch
 
-The entry point is `partitionToolCalls()` in `toolOrchestration.ts`. It takes an ordered array of `ToolUseBlock` messages and produces an array of batches, where each batch is either "all concurrent-safe" or "a single serial tool."
+Điểm vào là `partitionToolCalls()` trong `toolOrchestration.ts`. Hàm này nhận một mảng có thứ tự các message `ToolUseBlock` và tạo ra một mảng các batch, trong đó mỗi batch либо là "toàn bộ an toàn-đồng thời" hoặc "một công cụ tuần tự duy nhất".
 
 ```typescript
 // Pseudocode — illustrates the partition algorithm
@@ -41,14 +41,14 @@ function groupBySafety(calls: ToolCall[], registry: ToolRegistry): Group[] {
 }
 ```
 
-The algorithm walks the array left to right. For each tool call:
+Thuật toán đi qua mảng từ trái sang phải. Với mỗi lệnh gọi công cụ:
 
-1. **Look up the tool definition** by name.
-2. **Parse the input** with the tool's Zod schema via `safeParse()`. If parsing fails, the tool is conservatively classified as not concurrency-safe.
-3. **Call `isConcurrencySafe(parsedInput)`** on the tool definition. This is where per-input classification happens. The Bash tool parses the command string, checks if every subcommand is read-only (`ls`, `grep`, `cat`, `git status`), and returns `true` only if the entire compound command is a pure read. The Read tool always returns `true`. The Edit tool always returns `false`. The call is wrapped in try-catch -- if `isConcurrencySafe` throws (say, the Bash command string can't be parsed by the shell-quote library), the tool defaults to serial.
-4. **Merge or create a batch.** If the current tool is concurrency-safe AND the most recent batch is also concurrency-safe, append to that batch. Otherwise, start a new batch.
+1. **Tra cứu định nghĩa công cụ** theo tên.
+2. **Parse đầu vào** bằng schema Zod của công cụ qua `safeParse()`. Nếu parse thất bại, công cụ sẽ được phân loại bảo thủ là không an toàn cho đồng thời.
+3. **Gọi `isConcurrencySafe(parsedInput)`** trên định nghĩa công cụ. Đây là nơi diễn ra phân loại theo từng đầu vào. Công cụ Bash parse chuỗi lệnh, kiểm tra liệu mọi subcommand có chỉ đọc (`ls`, `grep`, `cat`, `git status`) hay không, và chỉ trả về `true` nếu toàn bộ lệnh ghép là đọc thuần. Công cụ Read luôn trả về `true`. Công cụ Edit luôn trả về `false`. Lệnh gọi này được bọc trong try-catch -- nếu `isConcurrencySafe` ném lỗi (ví dụ chuỗi lệnh Bash không parse được bởi thư viện shell-quote), công cụ mặc định chạy tuần tự.
+4. **Gộp hoặc tạo batch.** Nếu công cụ hiện tại an toàn-đồng thời VÀ batch gần nhất cũng an toàn-đồng thời, thêm vào batch đó. Nếu không, bắt đầu batch mới.
 
-The result is a sequence of batches that alternates between concurrent groups and individual serial entries. Walk through a concrete example:
+Kết quả là một chuỗi batch xen kẽ giữa nhóm đồng thời và các mục tuần tự đơn lẻ. Xem qua ví dụ cụ thể:
 
 ```
 Model requests: [Read, Read, Grep, Edit, Read]
@@ -65,17 +65,17 @@ Result: 3 batches
   Batch 3: [Read]              — run concurrently (just one tool)
 ```
 
-The partitioning is greedy and order-preserving. Consecutive safe tools accumulate into a single batch. Any unsafe tool breaks the run and starts a new batch. This means the order in which the model emits tool calls matters -- if it interleaves a Write between two Reads, you get three batches instead of two. In practice, models tend to cluster their reads together, which is the common case the algorithm is optimized for.
+Phân hoạch là tham lam và giữ nguyên thứ tự. Các công cụ an toàn liên tiếp sẽ tích lũy vào một batch duy nhất. Bất kỳ công cụ không an toàn nào cũng cắt chuỗi và mở batch mới. Điều này có nghĩa thứ tự mô hình phát ra lệnh gọi công cụ là quan trọng -- nếu nó chen một Write vào giữa hai Read, bạn sẽ có ba batch thay vì hai. Trên thực tế, mô hình thường gom các lệnh đọc lại với nhau, là trường hợp phổ biến mà thuật toán được tối ưu cho.
 
 ---
 
-## Batch Execution
+## Thực Thi Theo Lô
 
-The `runTools()` generator iterates through the partitioned batches and dispatches each one to the appropriate executor.
+Generator `runTools()` lặp qua các batch đã phân hoạch và điều phối từng batch sang executor phù hợp.
 
 ### Concurrent Batches
 
-For a concurrent batch, `runToolsConcurrently()` fires all tools in parallel using an `all()` utility that caps active generators at the concurrency limit:
+Với một batch đồng thời, `runToolsConcurrently()` kích hoạt toàn bộ công cụ song song bằng tiện ích `all()` có giới hạn số generator đang hoạt động theo ngưỡng đồng thời:
 
 ```typescript
 // Pseudocode — illustrates the concurrent dispatch pattern
@@ -91,11 +91,11 @@ async function* dispatchParallel(calls, context) {
 }
 ```
 
-The concurrency limit defaults to 10, configurable via `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`. Ten is generous -- you rarely see more than five or six tool calls in a single model response. The limit exists as a safety valve for pathological cases, not as a typical constraint.
+Giới hạn đồng thời mặc định là 10, cấu hình qua `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`. Mười là khá rộng -- hiếm khi thấy hơn năm hoặc sáu lệnh gọi công cụ trong một phản hồi mô hình. Giới hạn này tồn tại như van an toàn cho các trường hợp bệnh lý, không phải ràng buộc thường gặp.
 
-The `all()` utility is a generator-aware variant of `Promise.all` with bounded concurrency. It starts up to N generators simultaneously, yields results from whichever completes first, and starts the next queued generator as each one finishes. The mechanics are similar to a semaphore-guarded task pool, but adapted for async generators that yield intermediate results.
+Tiện ích `all()` là một biến thể nhận biết generator của `Promise.all` với đồng thời bị chặn. Nó khởi chạy tối đa N generator cùng lúc, yield kết quả từ cái nào hoàn tất trước, và khởi động generator xếp hàng kế tiếp mỗi khi một cái kết thúc. Cơ chế tương tự pool tác vụ có semaphore, nhưng được điều chỉnh cho async generator có thể yield kết quả trung gian.
 
-**Context modifier queuing** is the subtle part. Some tools produce *context modifiers* -- functions that transform the `ToolUseContext` for subsequent tools. When tools run concurrently, you cannot apply these modifiers immediately because other tools in the same batch are reading the same context. Instead, modifiers are collected in a map keyed by tool use ID:
+**Context modifier queuing** là phần tinh tế. Một số công cụ tạo ra *context modifiers* -- các hàm biến đổi `ToolUseContext` cho các công cụ tiếp theo. Khi công cụ chạy đồng thời, bạn không thể áp dụng các modifier này ngay vì các công cụ khác trong cùng batch đang đọc cùng context. Thay vào đó, modifiers được gom vào một map khóa theo tool use ID:
 
 ```typescript
 const queuedContextModifiers: Record<
@@ -104,7 +104,7 @@ const queuedContextModifiers: Record<
 > = {}
 ```
 
-After the entire concurrent batch finishes, the modifiers are applied in tool-order (not completion-order), preserving deterministic context evolution:
+Sau khi toàn bộ batch đồng thời kết thúc, modifiers được áp dụng theo thứ tự công cụ (không theo thứ tự hoàn tất), giữ cho sự tiến hóa context có tính quyết định:
 
 ```typescript
 for (const block of blocks) {
@@ -116,11 +116,11 @@ for (const block of blocks) {
 }
 ```
 
-In practice, none of the current concurrency-safe tools produce context modifiers -- the comment in the codebase acknowledges this explicitly. But the infrastructure exists because tools can be added by MCP servers, and a custom read-only MCP tool might legitimately want to modify context (updating a "files seen" set, for instance).
+Trên thực tế, không có công cụ an toàn-đồng thời hiện tại nào tạo context modifiers -- comment trong codebase nói rõ điều này. Nhưng hạ tầng đã có sẵn vì công cụ có thể được thêm bởi MCP servers, và một công cụ MCP chỉ-đọc tùy biến hoàn toàn có thể muốn sửa context (ví dụ cập nhật tập "files seen").
 
 ### Serial Batches
 
-Serial execution is straightforward. Each tool runs, its context modifiers are applied immediately, and the next tool sees the updated context:
+Thực thi tuần tự thì đơn giản. Mỗi công cụ chạy, context modifiers của nó được áp dụng ngay, và công cụ kế tiếp thấy context đã cập nhật:
 
 ```typescript
 for (const toolUse of toolUseMessages) {
@@ -133,15 +133,15 @@ for (const toolUse of toolUseMessages) {
 }
 ```
 
-This is the critical difference. Serial tools can change the world for subsequent tools. An Edit modifies a file; the next Read sees the modified version. A Bash command creates a directory; the next Bash command writes into it. Context modifiers are the formalization of this dependency: they let a tool say "the execution environment has changed, here's how."
+Đây là khác biệt then chốt. Công cụ tuần tự có thể thay đổi thế giới cho các công cụ sau. Một Edit sửa file; Read tiếp theo thấy phiên bản đã sửa. Một lệnh Bash tạo thư mục; lệnh Bash tiếp theo ghi vào đó. Context modifiers là hình thức hóa của phụ thuộc này: chúng cho phép công cụ nói "môi trường thực thi đã thay đổi, đây là cách thay đổi đó.".
 
 ---
 
-## The Streaming Tool Executor
+## Streaming Tool Executor
 
-Batch orchestration eliminates unnecessary serialization *after* the model's response arrives. But there is a bigger opportunity: the model's response takes time to stream. A typical multi-tool response might take 2-3 seconds to fully arrive. The first tool call is parseable after 500 milliseconds. Why wait for the remaining 2 seconds?
+Điều phối theo lô loại bỏ tuần tự hóa không cần thiết *sau khi* phản hồi mô hình đến nơi. Nhưng còn một cơ hội lớn hơn: phản hồi của mô hình cần thời gian để stream. Một phản hồi đa-công-cụ điển hình có thể mất 2-3 giây để đến đầy đủ. Lệnh gọi công cụ đầu tiên có thể parse sau 500 mili giây. Tại sao phải chờ thêm 2 giây còn lại?
 
-The `StreamingToolExecutor` class implements speculative execution. As the model streams its response, each `tool_use` block is handed to the executor the moment it is fully parsed. The executor starts running it immediately -- while the model is still generating the next tool call. By the time the response finishes streaming, several tools may have already completed.
+Lớp `StreamingToolExecutor` triển khai thực thi suy đoán. Khi mô hình stream phản hồi, mỗi khối `tool_use` được chuyển cho executor ngay khi parse xong đầy đủ. Executor lập tức chạy nó -- trong khi mô hình vẫn đang tạo lệnh gọi công cụ kế tiếp. Đến lúc phản hồi stream xong, có thể vài công cụ đã hoàn tất.
 
 ```mermaid
 gantt
@@ -162,13 +162,13 @@ gantt
     Tool 3 drain after stream  :b4, 2500, 2600
 ```
 
-Sequential total: 3.1s. Streaming total: 2.6s -- tools 1 and 2 completed during streaming, saving 16% of wall-clock time.
+Tổng tuần tự: 3.1s. Tổng streaming: 2.6s -- công cụ 1 và 2 hoàn tất trong lúc stream, tiết kiệm 16% thời gian treo tường.
 
-The savings compound. When the model requests five read-only tools and the response takes 3 seconds to stream, all five tools can start and finish during that 3 seconds. The post-stream drain phase has nothing left to do. The user sees results almost immediately after the last character of the model's response appears.
+Mức tiết kiệm còn cộng dồn. Khi mô hình yêu cầu năm công cụ chỉ-đọc và phản hồi mất 3 giây để stream, cả năm công cụ có thể bắt đầu và hoàn tất trong 3 giây đó. Giai đoạn drain sau stream không còn gì để làm. Người dùng thấy kết quả gần như ngay sau ký tự cuối cùng của phản hồi mô hình.
 
 ### Tool Lifecycle
 
-Each tool tracked by the executor progresses through four states:
+Mỗi công cụ được executor theo dõi sẽ đi qua bốn trạng thái:
 
 ```mermaid
 stateDiagram-v2
@@ -177,10 +177,10 @@ stateDiagram-v2
     completed --> yielded: results emitted in order
 ```
 
-- **queued**: The `tool_use` block has been parsed and registered. Waiting for concurrency conditions to allow execution.
-- **executing**: The tool's `call()` function is running. Results accumulate in a buffer.
-- **completed**: Execution finished. Results are ready to be yielded to the conversation.
-- **yielded**: Results have been emitted. Terminal state.
+- **queued**: Khối `tool_use` đã được parse và đăng ký. Đang chờ điều kiện đồng thời cho phép thực thi.
+- **executing**: Hàm `call()` của công cụ đang chạy. Kết quả được tích lũy vào buffer.
+- **completed**: Thực thi đã xong. Kết quả sẵn sàng để yield vào hội thoại.
+- **yielded**: Kết quả đã được phát ra. Trạng thái kết thúc.
 
 ### addTool(): Queuing During the Stream
 
@@ -188,59 +188,59 @@ stateDiagram-v2
 addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void
 ```
 
-Called by the streaming response parser each time a complete `tool_use` block arrives. The method:
+Được parser phản hồi streaming gọi mỗi lần một khối `tool_use` hoàn chỉnh đi tới. Phương thức này:
 
-1. Looks up the tool definition. If not found, immediately creates a `completed` entry with an error message -- no point in queuing a tool that does not exist.
-2. Parses the input and determines `isConcurrencySafe` using the same logic as `partitionToolCalls()`.
-3. Pushes a `TrackedTool` with status `'queued'`.
-4. Calls `processQueue()` -- which may start the tool immediately.
+1. Tra cứu định nghĩa công cụ. Nếu không tìm thấy, lập tức tạo một entry `completed` với thông báo lỗi -- không có lý do để xếp hàng một công cụ không tồn tại.
+2. Parse đầu vào và xác định `isConcurrencySafe` bằng cùng logic với `partitionToolCalls()`.
+3. Đẩy một `TrackedTool` với trạng thái `'queued'`.
+4. Gọi `processQueue()` -- có thể khởi chạy công cụ ngay.
 
-The call to `processQueue()` is fire-and-forget (`void this.processQueue()`). The executor does not await it. This is intentional: `addTool()` is called from the streaming parser's event handler, and blocking there would stall response parsing. The tool starts executing in the background while the parser continues consuming the stream.
+Lệnh gọi `processQueue()` là fire-and-forget (`void this.processQueue()`). Executor không await nó. Đây là chủ ý: `addTool()` được gọi từ event handler của parser streaming, và chặn tại đó sẽ làm khựng việc parse phản hồi. Công cụ bắt đầu chạy ở nền trong khi parser tiếp tục tiêu thụ stream.
 
 ### processQueue(): The Admission Check
 
-The admission check is a single predicate:
+Kiểm tra admission chỉ là một predicate:
 
 ```typescript
 // Pseudocode — illustrates the mutual exclusion rule
 canRun = noToolsRunning || (newToolIsSafe && allRunningAreSafe)
 ```
 
-A tool can start executing if and only if:
-- **No tools are currently executing** (the queue is empty), OR
-- **Both the new tool and all currently executing tools are concurrency-safe.**
+Một công cụ có thể bắt đầu chạy khi và chỉ khi:
+- **Không có công cụ nào đang chạy** (queue rỗng), HOẶC
+- **Cả công cụ mới lẫn mọi công cụ đang chạy đều concurrency-safe.**
 
-This is a mutual exclusion contract. A non-concurrent tool requires exclusive access -- nothing else can be running. Concurrent tools can share the runway with other concurrent tools, but a single non-concurrent tool in the executing set blocks everyone.
+Đây là một hợp đồng loại trừ lẫn nhau. Công cụ không-đồng-thời cần quyền truy cập độc quyền -- không thứ gì khác được phép chạy cùng lúc. Công cụ đồng thời có thể chia sẻ runway với các công cụ đồng thời khác, nhưng chỉ một công cụ không-đồng-thời trong tập đang chạy là sẽ chặn tất cả.
 
-The `processQueue()` method iterates through all tools in order. For each queued tool, it checks `canExecuteTool()`. If the tool can run, it starts. If a non-concurrent tool cannot run yet, the loop *breaks* -- it stops checking subsequent tools entirely, because non-concurrent tools must maintain ordering. If a concurrent tool cannot run (blocked by an executing non-concurrent tool), the loop *continues* -- but in practice this rarely helps, because concurrent tools after a non-concurrent blocker are typically dependent on its results anyway.
+Phương thức `processQueue()` duyệt toàn bộ công cụ theo thứ tự. Với mỗi công cụ đang queue, nó kiểm tra `canExecuteTool()`. Nếu công cụ có thể chạy, nó sẽ bắt đầu. Nếu một công cụ không-đồng-thời chưa thể chạy, vòng lặp sẽ *break* -- dừng kiểm tra toàn bộ công cụ phía sau, vì công cụ không-đồng-thời phải giữ thứ tự. Nếu một công cụ đồng thời không thể chạy (bị chặn bởi một công cụ không-đồng-thời đang chạy), vòng lặp sẽ *continue* -- nhưng thực tế điều này hiếm giúp ích, vì các công cụ đồng thời sau một điểm chặn không-đồng-thời thường phụ thuộc kết quả của điểm chặn đó.
 
 ### executeTool(): The Core Execution Loop
 
-This method is where the real complexity lives. It manages abort controllers, error cascades, progress reporting, and context modifiers.
+Đây là nơi chứa độ phức tạp thực sự. Nó quản lý abort controller, error cascade, báo tiến độ, và context modifiers.
 
-**Child abort controllers.** Each tool gets its own `AbortController` that is a child of a shared sibling-level controller.
+**Child abort controllers.** Mỗi công cụ có `AbortController` riêng là con của một sibling-level controller dùng chung.
 
-The hierarchy is three levels deep: the query-level controller (owned by the REPL, fires on user Ctrl+C) parents the sibling controller (owned by the streaming executor, fires on Bash errors) which parents each tool's individual controller. Aborting the sibling controller kills all running tools. Aborting a tool's individual controller kills only that tool -- but it also bubbles up to the query controller if the abort reason is not a sibling error. This bubble-up prevents the system from silently discarding the executor when, for example, a permission denial should end the entire turn.
+Cây phân cấp sâu ba lớp: query-level controller (do REPL sở hữu, kích hoạt khi người dùng Ctrl+C) làm cha của sibling controller (do streaming executor sở hữu, kích hoạt khi Bash lỗi), và sibling controller làm cha của controller riêng từng công cụ. Hủy sibling controller sẽ giết mọi công cụ đang chạy. Hủy controller riêng của một công cụ chỉ giết công cụ đó -- nhưng cũng bubble up tới query controller nếu lý do hủy không phải lỗi sibling. Bubble-up này ngăn hệ thống âm thầm bỏ qua executor khi, ví dụ, một lần từ chối quyền nên kết thúc cả lượt.
 
-This bubble-up is essential for permission denial. When a user rejects a tool in the permission dialog, the tool's abort controller fires. That signal must reach the query loop so it can end the turn. Without it, the query loop would continue as if nothing happened, sending a stale rejection message to the model.
+Bubble-up này là thiết yếu cho từ chối quyền. Khi người dùng từ chối một công cụ trong hộp thoại quyền, abort controller của công cụ sẽ kích hoạt. Tín hiệu đó phải đến query loop để nó kết thúc lượt. Nếu không, query loop sẽ tiếp tục như chưa có gì xảy ra, gửi một thông điệp từ chối cũ cho mô hình.
 
-**The sibling error cascade.** When a tool produces an error result, the executor checks whether to cancel sibling tools. The rule: **only Bash errors cascade.** When a shell command errors, the executor records the failure, captures a description of the errored tool, and aborts the sibling controller -- which cancels all other running tools in the batch.
+**The sibling error cascade.** Khi một công cụ trả về kết quả lỗi, executor kiểm tra liệu có nên hủy các công cụ sibling không. Quy tắc: **chỉ lỗi Bash mới cascade.** Khi một lệnh shell lỗi, executor ghi nhận lỗi, chụp mô tả công cụ bị lỗi, và hủy sibling controller -- khiến mọi công cụ đang chạy khác trong batch bị hủy.
 
-The rationale is pragmatic. Bash commands often form implicit dependency chains: `mkdir build && cp src/* build/ && tar -czf dist.tar.gz build/`. If `mkdir` fails, running `cp` and `tar` is pointless. Canceling siblings immediately saves time and avoids confusing error messages.
+Lý do là thực dụng. Lệnh Bash thường tạo chuỗi phụ thuộc ngầm: `mkdir build && cp src/* build/ && tar -czf dist.tar.gz build/`. Nếu `mkdir` lỗi, chạy `cp` và `tar` là vô nghĩa. Hủy sibling ngay lập tức tiết kiệm thời gian và tránh thông báo lỗi gây nhiễu.
 
-Read and Grep errors, by contrast, are independent. If one file read fails because the file was deleted, that has no bearing on a concurrent grep searching a different directory. Canceling the grep would waste work for no reason.
+Ngược lại, lỗi Read và Grep là độc lập. Nếu một lần đọc file lỗi vì file bị xóa, điều đó không liên quan gì đến một grep đồng thời đang tìm ở thư mục khác. Hủy grep sẽ phí công vô ích.
 
-The error cascade produces synthetic error messages for sibling tools:
+Error cascade tạo thông báo lỗi tổng hợp cho các công cụ sibling:
 
 ```
 Cancelled: parallel tool call Bash(mkdir build) errored
 ```
 
-The description includes the first 40 characters of the errored tool's command or file path, giving the model enough context to understand what went wrong.
+Mô tả gồm 40 ký tự đầu của lệnh hoặc đường dẫn file ở công cụ bị lỗi, cho mô hình đủ ngữ cảnh để hiểu điều gì đã sai.
 
-**Progress messages** are handled separately from results. While results are buffered and yielded in order, progress messages (status updates like "Reading file..." or "Searching...") go to a `pendingProgress` array and are yielded immediately via `getCompletedResults()`. A resolve callback wakes up the `getRemainingResults()` loop when new progress arrives, preventing the UI from appearing frozen during long-running tools.
+**Progress messages** được xử lý tách khỏi kết quả. Trong khi kết quả được đệm và yield theo thứ tự, thông báo tiến độ (cập nhật trạng thái như "Reading file..." hoặc "Searching...") đi vào mảng `pendingProgress` và được yield ngay qua `getCompletedResults()`. Một resolve callback đánh thức vòng `getRemainingResults()` khi có tiến độ mới, ngăn UI trông như bị treo khi công cụ chạy lâu.
 
-**Queue re-processing.** After each tool completes, `processQueue()` is called again:
+**Queue re-processing.** Sau mỗi khi công cụ hoàn tất, `processQueue()` được gọi lại:
 
 ```typescript
 void promise.finally(() => {
@@ -248,27 +248,27 @@ void promise.finally(() => {
 })
 ```
 
-This is how serial tools that were blocked by a concurrent batch get started. When the last concurrent tool finishes, the subsequent non-concurrent tool's `canExecuteTool()` check passes, and it begins executing.
+Đây là cách các công cụ tuần tự bị chặn bởi một batch đồng thời được khởi động. Khi công cụ đồng thời cuối cùng hoàn tất, kiểm tra `canExecuteTool()` của công cụ không-đồng-thời kế tiếp sẽ pass, và nó bắt đầu chạy.
 
 ### Result Harvesting
 
-The streaming executor exposes two harvesting methods, designed for two different phases of the response lifecycle.
+Streaming executor cung cấp hai phương thức harvest, thiết kế cho hai pha khác nhau của vòng đời phản hồi.
 
-**`getCompletedResults()` -- mid-stream harvesting.** This is a synchronous generator called between chunks of the streaming API response. It walks the tools array in order and yields results for any tools that have completed:
+**`getCompletedResults()` -- thu hoạch giữa luồng.** Đây là synchronous generator được gọi giữa các chunk của phản hồi streaming API. Nó duyệt mảng công cụ theo thứ tự và yield kết quả cho các công cụ đã hoàn tất:
 
-`getCompletedResults()` is a synchronous generator that walks the tools array in submission order. For each tool, it first drains any pending progress messages. If the tool is completed, it yields the results and marks it as yielded. The critical rule: if a non-concurrent tool is still executing, the walk **breaks** -- nothing after it can be yielded, even if subsequent tools have already completed. Results after a serial tool might depend on its context modifications, so they must wait. For concurrent tools, this restriction does not apply; the loop skips executing concurrent tools and continues checking subsequent entries.
+`getCompletedResults()` là synchronous generator duyệt mảng công cụ theo thứ tự gửi lên. Với mỗi công cụ, trước hết nó xả mọi thông báo tiến độ đang chờ. Nếu công cụ đã completed, nó yield kết quả và đánh dấu là yielded. Quy tắc then chốt: nếu một công cụ không-đồng-thời vẫn đang executing, vòng duyệt sẽ **break** -- không gì phía sau được yield, kể cả khi các công cụ sau đã hoàn tất. Kết quả sau một công cụ tuần tự có thể phụ thuộc vào các sửa đổi context của nó, nên phải chờ. Với công cụ đồng thời, ràng buộc này không áp dụng; vòng lặp bỏ qua các công cụ đồng thời đang chạy và tiếp tục kiểm tra các entry sau.
 
-This break is the order-preservation mechanism. If a non-concurrent tool is still executing, nothing after it can be yielded -- even if subsequent tools have already completed. Results after a serial tool might depend on its context modifications, so they must wait. For concurrent tools, this restriction does not apply; the loop skips executing concurrent tools and continues checking subsequent entries.
+Break này là cơ chế bảo toàn thứ tự. Nếu một công cụ không-đồng-thời còn đang chạy, không gì phía sau được yield -- ngay cả khi các công cụ sau đã hoàn tất. Kết quả sau một công cụ tuần tự có thể phụ thuộc vào các sửa đổi context của nó, nên phải chờ. Với công cụ đồng thời, ràng buộc này không áp dụng; vòng lặp bỏ qua các công cụ đồng thời đang chạy và tiếp tục kiểm tra các entry sau.
 
-**`getRemainingResults()` -- post-stream drain.** Called after the model's response is fully received. This async generator loops until every tool is yielded:
+**`getRemainingResults()` -- drain sau luồng.** Được gọi sau khi phản hồi mô hình nhận đầy đủ. Async generator này lặp cho đến khi mọi công cụ đều được yielded:
 
-`getRemainingResults()` is the post-stream drain. It loops until every tool is yielded. On each iteration, it processes the queue (starting any newly-unblocked tools), yields any completed results via `getCompletedResults()`, and then -- if tools are still executing but nothing new has completed -- uses `Promise.race` to idle-wait on whichever finishes first: any executing tool's promise, or a progress-available signal. This avoids busy-polling while still waking up the moment something happens. When no tools have completed and nothing new can start, the executor waits for any executing tool to finish (or for progress to arrive). This avoids busy-polling while still waking up the moment something happens.
+`getRemainingResults()` là pha drain sau stream. Nó lặp cho đến khi mọi công cụ đều được yielded. Mỗi vòng lặp, nó xử lý queue (khởi chạy các công cụ mới được mở chặn), yield mọi kết quả đã hoàn tất qua `getCompletedResults()`, rồi -- nếu vẫn có công cụ đang chạy nhưng chưa có gì mới hoàn tất -- dùng `Promise.race` để idle-wait cho thứ hoàn tất trước: promise của bất kỳ công cụ đang chạy nào, hoặc tín hiệu có progress mới. Cách này tránh busy-polling nhưng vẫn thức dậy đúng lúc có biến động. Khi không có công cụ nào hoàn tất và cũng không có gì mới có thể khởi chạy, executor chờ một công cụ đang chạy hoàn tất (hoặc progress xuất hiện). Cách này tránh busy-polling nhưng vẫn thức dậy ngay khi có sự kiện.
 
 ### Order Preservation
 
-Results are yielded in the order tools were *received*, not the order they *completed*. This is a deliberate design choice.
+Kết quả được yield theo thứ tự công cụ *được nhận vào*, không phải theo thứ tự *hoàn tất*. Đây là một lựa chọn thiết kế có chủ đích.
 
-Consider a model response that requests `[Read("a.ts"), Read("b.ts"), Read("c.ts")]`. All three start concurrently. `c.ts` finishes first (it is smaller), then `a.ts`, then `b.ts`. If results were yielded in completion order, the conversation would show:
+Xét một phản hồi mô hình yêu cầu `[Read("a.ts"), Read("b.ts"), Read("c.ts")]`. Cả ba khởi chạy đồng thời. `c.ts` hoàn tất trước (vì nhỏ hơn), rồi `a.ts`, rồi `b.ts`. Nếu kết quả được yield theo thứ tự hoàn tất, lịch sử hội thoại sẽ là:
 
 ```
 Tool result: c.ts contents
@@ -276,7 +276,7 @@ Tool result: a.ts contents
 Tool result: b.ts contents
 ```
 
-But the model emitted them in a-b-c order. The conversation history must match the model's expectation, or the next turn will be confused about which result corresponds to which request. By yielding in arrival order, the conversation stays coherent:
+Nhưng mô hình đã phát ra theo thứ tự a-b-c. Lịch sử hội thoại phải khớp kỳ vọng của mô hình, nếu không lượt tiếp theo sẽ rối về việc kết quả nào tương ứng yêu cầu nào. Bằng cách yield theo thứ tự đến, hội thoại giữ được tính nhất quán:
 
 ```
 Tool result: a.ts contents  (completed second, yielded first)
@@ -284,11 +284,11 @@ Tool result: b.ts contents  (completed third, yielded second)
 Tool result: c.ts contents  (completed first, yielded third)
 ```
 
-The cost is minor: if tool 1 is slow and tools 2-5 are fast, the fast results sit in buffers until tool 1 finishes. But the alternative -- conversation incoherence -- is far worse.
+Cái giá là nhỏ: nếu công cụ 1 chậm và công cụ 2-5 nhanh, các kết quả nhanh sẽ nằm trong buffer cho tới khi công cụ 1 xong. Nhưng lựa chọn ngược lại -- hội thoại mất nhất quán -- tệ hơn nhiều.
 
 ### discard(): The Streaming Fallback Escape Hatch
 
-When the API response stream fails mid-way (network error, server disconnect), the system retries with a new API call. But the streaming executor may have already started tools from the failed attempt. Those results are now orphaned -- they correspond to a response that was never fully received.
+Khi luồng phản hồi API lỗi giữa chừng (lỗi mạng, server ngắt kết nối), hệ thống thử lại bằng lệnh gọi API mới. Nhưng streaming executor có thể đã bắt đầu chạy công cụ từ lần thử thất bại. Các kết quả đó giờ thành orphan -- chúng tương ứng với một phản hồi chưa bao giờ nhận đầy đủ.
 
 ```typescript
 discard(): void {
@@ -296,18 +296,18 @@ discard(): void {
 }
 ```
 
-Setting `discarded = true` causes:
-- `getCompletedResults()` returns immediately with no results.
-- `getRemainingResults()` returns immediately with no results.
-- Any tool that starts executing checks `getAbortReason()`, sees `streaming_fallback`, and gets a synthetic error instead of actually running.
+Đặt `discarded = true` gây ra:
+- `getCompletedResults()` trả về ngay không có kết quả.
+- `getRemainingResults()` trả về ngay không có kết quả.
+- Bất kỳ công cụ nào bắt đầu chạy sẽ kiểm tra `getAbortReason()`, thấy `streaming_fallback`, và nhận lỗi tổng hợp thay vì thực sự chạy.
 
-The discarded executor is abandoned. A fresh executor is created for the retry attempt.
+Executor đã bị discard sẽ bị bỏ. Một executor mới tinh được tạo cho lần thử lại.
 
 ---
 
-## Tool Concurrency Properties
+## Thuộc Tính Đồng Thời Của Công Cụ
 
-Each built-in tool declares its concurrency characteristics through the `isConcurrencySafe()` method. The classification is not arbitrary -- it reflects the tool's actual effect on shared state.
+Mỗi công cụ built-in khai báo đặc tính đồng thời thông qua phương thức `isConcurrencySafe()`. Phân loại này không tùy tiện -- nó phản ánh tác động thực của công cụ lên trạng thái dùng chung.
 
 | Tool | Concurrency Safe | Condition | Rationale |
 |------|-----------------|-----------|-----------|
@@ -321,41 +321,41 @@ Each built-in tool declares its concurrency characteristics through the `isConcu
 | **Write** | Never | -- | Creates or overwrites files. Same corruption risk. |
 | **NotebookEdit** | Never | -- | Modifies `.ipynb` files. |
 
-The Bash tool's classification deserves elaboration. It uses `splitCommandWithOperators()` to decompose compound commands (`&&`, `||`, `;`, `|`), then classifies each subcommand against known-safe sets:
+Phân loại của công cụ Bash cần làm rõ thêm. Nó dùng `splitCommandWithOperators()` để tách lệnh ghép (`&&`, `||`, `;`, `|`), rồi phân loại từng subcommand theo các tập an toàn đã biết:
 
 - **Search commands**: `grep`, `rg`, `find`, `fd`, `ag`, `ack`
 - **Read commands**: `cat`, `head`, `tail`, `wc`, `jq`, `less`, `file`, `stat`
 - **List commands**: `ls`, `tree`, `du`, `df`
-- **Neutral commands**: `echo`, `printf` (no side effects but not "reads")
+- **Neutral commands**: `echo`, `printf` (không có side effects nhưng không phải "reads")
 
-A compound command is read-only only if every non-neutral subcommand is in the search, read, or list set. `ls -la && cat README.md` is safe. `ls -la && rm -rf build/` is not -- the `rm` contaminates the entire command.
-
----
-
-## The Interrupt Behavior Contract
-
-While tools are executing, the user can type a new message. What should happen? The answer depends on the tool.
-
-Each tool declares an `interruptBehavior()` method that returns either `'cancel'` or `'block'`:
-
-- **`'cancel'`**: Stop the tool immediately, discard partial results, and process the new user message. Used by tools where partial execution is harmless (reads, searches).
-- **`'block'`**: Keep the tool running to completion. The user's new message waits. Used by tools where interruption would leave the system in an inconsistent state (writes mid-flight, long-running bash commands). This is the default.
-
-The streaming executor tracks the interruptible state of the current tool set:
-
-The interruptible state is updated by checking all currently executing tools: the set is interruptible only when every executing tool supports cancellation. If even one tool's interrupt behavior is `'block'`, the entire set is treated as non-interruptible.
-
-The UI only shows an "interruptible" indicator when ALL executing tools support cancellation. If even one tool is `'block'`, the entire set is treated as non-interruptible. This is conservative but correct: you cannot meaningfully interrupt a batch where one tool would keep running anyway.
-
-When the user does interrupt and all tools are cancellable, the abort controller fires with reason `'interrupt'`. The executor's `getAbortReason()` method checks each tool's interrupt behavior individually -- a `'cancel'` tool gets a synthetic `user_interrupted` error, while a `'block'` tool (which would not be present in a fully interruptible set, but the code handles the edge case) continues running.
+Một lệnh ghép chỉ-đọc khi và chỉ khi mọi subcommand không-trung-tính đều nằm trong tập search, read, hoặc list. `ls -la && cat README.md` là an toàn. `ls -la && rm -rf build/` thì không -- `rm` làm nhiễm bẩn toàn bộ lệnh.
 
 ---
 
-## Context Modifiers: The Serial-Only Contract
+## Hợp Đồng Hành Vi Ngắt
 
-Context modifiers are functions of type `(context: ToolUseContext) => ToolUseContext`. They let a tool say "I've changed something about the execution environment that subsequent tools need to know about."
+Trong khi công cụ đang chạy, người dùng có thể nhập một tin nhắn mới. Điều gì nên xảy ra? Câu trả lời phụ thuộc vào công cụ.
 
-The contract is simple: **context modifiers are only applied for serial (non-concurrent-safe) tools.** This is stated explicitly in the source:
+Mỗi công cụ khai báo phương thức `interruptBehavior()` trả về `'cancel'` hoặc `'block'`:
+
+- **`'cancel'`**: Dừng công cụ ngay, bỏ kết quả dở dang, rồi xử lý tin nhắn mới của người dùng. Dùng cho công cụ mà thực thi dở dang là vô hại (đọc, tìm kiếm).
+- **`'block'`**: Giữ công cụ chạy đến hết. Tin nhắn mới của người dùng phải chờ. Dùng cho công cụ mà ngắt giữa chừng sẽ để hệ thống ở trạng thái không nhất quán (ghi giữa chừng, lệnh bash chạy dài). Đây là mặc định.
+
+Streaming executor theo dõi trạng thái có thể ngắt của tập công cụ hiện tại:
+
+Trạng thái có thể ngắt được cập nhật bằng cách kiểm tra mọi công cụ đang chạy: tập này chỉ có thể ngắt khi mọi công cụ đang chạy đều hỗ trợ hủy. Chỉ cần một công cụ có interrupt behavior là `'block'`, toàn bộ tập sẽ được xem là không thể ngắt.
+
+UI chỉ hiển thị chỉ báo "interruptible" khi TẤT CẢ công cụ đang chạy đều hỗ trợ hủy. Chỉ cần một công cụ là `'block'`, cả tập sẽ được coi là không thể ngắt. Cách này bảo thủ nhưng đúng: bạn không thể ngắt có ý nghĩa một batch mà trong đó một công cụ vẫn sẽ tiếp tục chạy.
+
+Khi người dùng thực sự ngắt và mọi công cụ đều hủy được, abort controller sẽ kích hoạt với lý do `'interrupt'`. Phương thức `getAbortReason()` của executor kiểm tra interrupt behavior từng công cụ -- công cụ `'cancel'` nhận lỗi tổng hợp `user_interrupted`, còn công cụ `'block'` (trường hợp này sẽ không xuất hiện trong một tập hoàn toàn interruptible, nhưng code vẫn xử lý edge case) tiếp tục chạy.
+
+---
+
+## Context Modifiers: Hợp Đồng Chỉ-Tuần-Tự
+
+Context modifiers là các hàm kiểu `(context: ToolUseContext) => ToolUseContext`. Chúng cho phép một công cụ nói "tôi đã thay đổi điều gì đó trong môi trường thực thi mà các công cụ sau cần biết.".
+
+Hợp đồng rất đơn giản: **context modifiers chỉ được áp dụng cho công cụ tuần tự (không concurrency-safe).** Điều này được nêu rõ trong mã nguồn:
 
 ```typescript
 // NOTE: we currently don't support context modifiers for concurrent
@@ -368,32 +368,32 @@ if (!tool.isConcurrencySafe && contextModifiers.length > 0) {
 }
 ```
 
-In the batch orchestration path (`toolOrchestration.ts`), concurrent batch modifiers are collected and applied after the batch completes, in tool-submission order. This means concurrent tools within a batch cannot see each other's context changes, but the batch after them can.
+Trong nhánh batch orchestration (`toolOrchestration.ts`), modifier của batch đồng thời được gom lại và áp dụng sau khi batch kết thúc, theo thứ tự công cụ được gửi. Điều này nghĩa là các công cụ đồng thời trong cùng batch không thể thấy thay đổi context của nhau, nhưng batch đứng sau chúng thì có thể.
 
-The asymmetry is intentional. If Tool A modifies context and Tool B reads that context, they have a data dependency. Data dependencies mean they cannot run concurrently. By definition, if two tools are concurrency-safe, neither should depend on the other's context modifications. The system enforces this by deferring application.
+Tính bất đối xứng này là có chủ đích. Nếu Tool A sửa context và Tool B đọc context đó, chúng có phụ thuộc dữ liệu. Có phụ thuộc dữ liệu nghĩa là chúng không thể chạy đồng thời. Theo định nghĩa, nếu hai công cụ là concurrency-safe, không công cụ nào nên phụ thuộc vào sửa đổi context của công cụ kia. Hệ thống cưỡng chế điều này bằng cách hoãn áp dụng.
 
 ---
 
 ## Apply This
 
-The concurrency patterns in Claude Code generalize to any system that orchestrates multiple independent operations. Three principles are worth extracting.
+Các mẫu đồng thời trong Claude Code tổng quát hóa tốt cho bất kỳ hệ thống nào điều phối nhiều thao tác độc lập. Có ba nguyên tắc đáng rút ra.
 
-**Partition by safety, not by type.** The `isConcurrencySafe(input)` method receives the parsed input, not just the tool name. This per-invocation classification is more precise than a static "this tool type is always safe" declaration. In your own systems, inspect the operation's arguments before deciding whether to parallelize. A database read is safe to parallelize; a database write to the same row is not. The operation type alone does not tell you enough.
+**Partition by safety, not by type** (Phân tách theo độ an toàn, không theo loại). Phương thức `isConcurrencySafe(input)` nhận đầu vào đã parse, không chỉ tên công cụ. Phân loại theo từng lần gọi này chính xác hơn tuyên bố tĩnh kiểu "loại công cụ này luôn an toàn". Trong hệ thống của bạn, hãy kiểm tra đối số của thao tác trước khi quyết định có song song hóa hay không. Một database read an toàn để song song hóa; một database write vào cùng một hàng thì không. Chỉ nhìn loại thao tác là chưa đủ.
 
-**Speculative execution during I/O waits.** The streaming executor starts tools while the API response is still arriving. The same pattern applies anywhere you have a slow producer and fast consumers: start processing early items while later items are still being generated. HTTP/2 server push, compiler pipeline parallelism, and speculative CPU execution all share this structure. The key requirement is that you can identify independent work before the full instruction set is available.
+**Speculative execution during I/O waits** (Thực thi suy đoán trong lúc chờ I/O). Streaming executor khởi chạy công cụ khi phản hồi API vẫn đang đến. Mẫu tương tự áp dụng ở bất cứ nơi nào bạn có producer chậm và consumer nhanh: bắt đầu xử lý các mục đầu trong khi các mục sau vẫn đang được tạo. HTTP/2 server push, compiler pipeline parallelism, và speculative CPU execution đều cùng cấu trúc này. Yêu cầu cốt lõi là bạn phải nhận diện được công việc độc lập trước khi toàn bộ tập chỉ dẫn có mặt.
 
-**Preserve submission order in results.** Yielding results in completion order is tempting -- it minimizes latency to first result. But if the consumer (in this case, the language model) expects results in a specific order, reordering them creates confusion that costs more time to resolve than the latency savings. Buffer completed results and release them in the order they were requested. The implementation cost is a simple array walk; the correctness benefit is absolute.
+**Preserve submission order in results** (Giữ thứ tự gửi trong kết quả). Yield kết quả theo thứ tự hoàn tất rất hấp dẫn -- nó giảm độ trễ tới kết quả đầu tiên. Nhưng nếu bên tiêu thụ (trong trường hợp này là mô hình ngôn ngữ) kỳ vọng kết quả theo một thứ tự cụ thể, việc đảo thứ tự tạo ra nhầm lẫn tốn nhiều thời gian gỡ hơn phần độ trễ tiết kiệm được. Hãy đệm kết quả đã hoàn tất và phát chúng theo thứ tự được yêu cầu. Chi phí triển khai chỉ là một lần duyệt mảng đơn giản; lợi ích về tính đúng đắn là tuyệt đối.
 
-The streaming executor pattern is particularly powerful for agent systems. Any time your agent loop involves a "think, then act" cycle where the thinking phase produces multiple independent actions, you can overlap the tail of thinking with the beginning of acting. The savings are proportional to the ratio of think-time to act-time. For language model agents, where think-time (API response generation) dominates, the savings are substantial.
+Mẫu streaming executor đặc biệt mạnh cho các hệ thống agent. Bất cứ khi nào vòng lặp agent của bạn gồm chu kỳ "nghĩ, rồi hành động" mà pha nghĩ tạo ra nhiều hành động độc lập, bạn có thể chồng đuôi pha nghĩ với đầu pha hành động. Mức tiết kiệm tỷ lệ thuận với tỉ lệ thời gian nghĩ so với thời gian hành động. Với agent mô hình ngôn ngữ, nơi thời gian nghĩ (tạo phản hồi API) chiếm ưu thế, mức tiết kiệm là đáng kể.
 
 ---
 
-## Summary
+## Tóm Tắt
 
-Claude Code's concurrency system operates at two levels. The partition algorithm (`partitionToolCalls`) groups consecutive concurrency-safe tools into batches that run in parallel, while isolating unsafe tools into serial batches where each tool sees the effects of the one before it. The streaming tool executor (`StreamingToolExecutor`) goes further, starting tools speculatively as they arrive during model response streaming, overlapping tool execution with response generation.
+Hệ thống đồng thời của Claude Code vận hành ở hai mức. Thuật toán phân hoạch (`partitionToolCalls`) gom các công cụ liên tiếp an toàn-đồng-thời thành batch chạy song song, đồng thời tách các công cụ không an toàn vào batch tuần tự nơi mỗi công cụ thấy được hiệu ứng của công cụ trước nó. Streaming tool executor (`StreamingToolExecutor`) đi xa hơn bằng cách khởi chạy công cụ theo kiểu suy đoán ngay khi chúng đến trong quá trình stream phản hồi mô hình, chồng thực thi công cụ với quá trình tạo phản hồi.
 
-The safety model is conservative by design. Concurrency safety is determined per-invocation by inspecting parsed inputs. Unknown tools default to serial. Parsing failures default to serial. Exceptions in safety checks default to serial. The system never guesses that something is safe to parallelize -- the tool must affirmatively declare it.
+Mô hình an toàn được thiết kế bảo thủ. Độ an toàn đồng thời được xác định theo từng lần gọi bằng cách kiểm tra đầu vào đã parse. Công cụ không rõ mặc định chạy tuần tự. Parse thất bại mặc định tuần tự. Exception trong kiểm tra an toàn mặc định tuần tự. Hệ thống không bao giờ đoán thứ gì an toàn để song song hóa -- công cụ phải tự khai báo dứt khoát.
 
-Error handling follows the dependency structure of the tools. Bash errors cascade to siblings because shell commands often form implicit pipelines. Read and search errors are isolated because they are independent operations. The abort controller hierarchy -- query controller, sibling controller, per-tool controller -- gives each level the ability to cancel its scope without disrupting the level above.
+Xử lý lỗi đi theo cấu trúc phụ thuộc của công cụ. Lỗi Bash cascade sang sibling vì lệnh shell thường tạo pipeline ngầm. Lỗi read và search được cô lập vì là thao tác độc lập. Cây abort controller -- query controller, sibling controller, per-tool controller -- cho mỗi tầng khả năng hủy đúng phạm vi của nó mà không phá tầng phía trên.
 
-The result is a system that extracts maximum parallelism from the model's tool requests while maintaining the invariant that the conversation history reflects a coherent, ordered sequence of actions. The model sees results in the order it requested them. The user sees tools complete as fast as the underlying operations allow. The gap between those two -- execution speed vs. presentation order -- is bridged by buffering, and that buffer is the simplest part of the entire system.
+Kết quả là một hệ thống trích xuất mức song song tối đa từ các yêu cầu công cụ của mô hình, đồng thời giữ bất biến rằng lịch sử hội thoại phản ánh một chuỗi hành động nhất quán, có thứ tự. Mô hình thấy kết quả theo đúng thứ tự nó yêu cầu. Người dùng thấy công cụ hoàn tất nhanh đúng bằng khả năng của tác vụ nền. Khoảng cách giữa hai điều đó -- tốc độ thực thi so với thứ tự trình bày -- được nối bằng bộ đệm, và bộ đệm ấy lại là phần đơn giản nhất của toàn hệ thống.

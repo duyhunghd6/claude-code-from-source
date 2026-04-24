@@ -9,8 +9,8 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
 ---
 
 <BaseLayout
-  title="Claude Code from Source — Architecture, Patterns & Internals"
-  description="A technical book analyzing the architecture of Anthropic's AI coding agent. 18 chapters, 400 pages, reverse-engineered from source maps. No source code — only transferable patterns."
+  title="Claude Code from Source — Kiến trúc, Mẫu thiết kế & Nội bộ"
+  description="Một cuốn sách kỹ thuật phân tích kiến trúc của AI coding agent từ Anthropic. 18 chương, 400 trang, được dịch ngược từ source maps. Không có mã nguồn — chỉ có các mẫu thiết kế (transferable patterns) có thể ứng dụng."
 >
   <Header />
 
@@ -20,21 +20,21 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <div class="text-center mb-20">
       <img
         src={`${base}cover.jpg`}
-        alt="Claude Code from Source — Book Cover"
+        alt="Claude Code từ mã nguồn — Bìa sách"
         class="mx-auto w-64 md:w-72 rounded-lg shadow-lg mb-10"
       />
       <h1 class="text-3xl md:text-4xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-6 leading-tight">
-        How Anthropic built the most widely used<br class="hidden md:inline" /> AI coding agent
+        Cách Anthropic xây dựng AI coding agent<br class="hidden md:inline" /> được sử dụng rộng rãi nhất
       </h1>
       <p class="text-lg text-[var(--color-secondary)] dark:text-[var(--color-muted)] max-w-2xl mx-auto leading-relaxed mb-6">
-        When Claude Code shipped on npm, the source maps came with it. We read every file. This book distills the architecture, design decisions, and transferable patterns into
-        <span class="text-[var(--color-terracotta)] font-medium">18 chapters</span> you can learn from and apply to your own systems.
+        Khi Claude Code được phát hành trên npm, source maps cũng đi kèm theo. Chúng tôi đã đọc từng tập tin. Cuốn sách này đúc kết kiến trúc, các quyết định thiết kế và các mẫu thiết kế có thể ứng dụng thành
+        <span class="text-[var(--color-terracotta)] font-medium">18 chương</span> mà bạn có thể học hỏi và áp dụng vào cấu trúc hệ thống của riêng mình.
       </p>
       <a
         href={`${base}${chapters[0].slug}/`}
         class="inline-flex items-center gap-2 px-6 py-3 bg-[var(--color-terracotta)] text-white font-medium rounded-lg hover:opacity-90 transition-opacity"
       >
-        Start reading
+        Bắt đầu đọc
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
         </svg>
@@ -44,16 +44,16 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- What You'll Learn -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-8">
-        What you'll learn
+        Bạn sẽ học được gì
       </h2>
       <div class="grid md:grid-cols-2 gap-6">
         {[
-          { title: 'The agent loop', text: 'How an async generator drives the entire system — streaming model output, executing tools, recovering from errors, and compressing context across 4 layers.' },
-          { title: 'Tool execution at scale', text: 'A 14-step pipeline from model request to tool result. Permission resolution, speculative execution, concurrent batching by safety classification.' },
-          { title: 'Multi-agent orchestration', text: 'How sub-agents share prompt cache prefixes to cut costs by 95%. Fork agents, coordinator mode, swarm teams with mailbox messaging.' },
-          { title: 'Memory without a database', text: 'File-based memory with an LLM-powered recall system. Four memory types, staleness warnings, and a Sonnet side-query that beats embedding search.' },
-          { title: 'Performance engineering', text: 'Startup in 240ms via parallel I/O. Slot reservation saving context in 99% of requests. Bitmap pre-filters for fuzzy search. Every millisecond accounted for.' },
-          { title: 'Extensibility and security', text: 'Two-phase skill loading (metadata at startup, content on demand). 27 lifecycle hooks with config snapshots frozen at startup to prevent injection.' },
+          { title: 'Agent Loop', text: 'Cách một async generator điều khiển toàn bộ hệ thống — phát trực tuyến đầu ra của model, thực thi công cụ, phục hồi sau lỗi và nén ngữ cảnh qua 4 lớp.' },
+          { title: 'Thực thi công cụ ở quy mô lớn', text: 'Một pipeline 14 bước từ yêu cầu model đến kết quả công cụ. Phân giải quyền, speculative execution, và phân lô đồng thời dựa trên phân loại an toàn.' },
+          { title: 'Điều phối đa tác nhân (Multi-agent orchestration)', text: 'Cách các sub-agent chia sẻ prompt cache prefixes để giảm 95% chi phí. Fork Agents, coordinator mode, các nhóm swarm với giao tiếp thông qua mailbox.' },
+          { title: 'Bộ nhớ không cần cơ sở dữ liệu', text: 'Bộ nhớ dựa trên tệp với hệ thống LLM-powered recall. Bốn loại bộ nhớ, cảnh báo độ trễ (staleness), và một Sonnet side-query đánh bại tìm kiếm thông qua embedding.' },
+          { title: 'Kỹ thuật hiệu suất', text: 'Khởi động trong 240ms thông qua parallel I/O. Slot reservation giúp tiết kiệm ngữ cảnh trong 99% yêu cầu. Bitmap pre-filters dùng cho tìm kiếm mờ. Mỗi mili-giây đều được tính toán.' },
+          { title: 'Khả năng mở rộng và bảo mật', text: 'Hai giai đoạn tải kỹ năng (tải siêu dữ liệu khi khởi động, tải nội dung theo yêu cầu). 27 lifecycle hooks cùng các bản chụp cấu hình được đóng băng ngay lúc khởi động để ngăn chặn injection.' },
         ].map(({ title, text }) => (
           <div class="p-5 rounded-lg border border-[var(--color-border)] dark:border-[#333]">
             <h3 class="font-semibold text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-2">{title}</h3>
@@ -66,10 +66,10 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- Architecture Explorer -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-3">
-        Explore the architecture
+        Khám phá kiến trúc
       </h2>
       <p class="text-sm text-[var(--color-muted)] mb-6">
-        Six core abstractions power Claude Code. Drag nodes to rearrange, hover for details, click to read the chapter.
+        Sáu thành phần trừu tượng cốt lõi hỗ trợ Claude Code. Kéo các node để sắp xếp lại, di chuột để xem chi tiết, nhấp để đọc chương.
       </p>
       <ArchitectureExplorer client:only="react" className="w-full" />
     </section>
@@ -77,26 +77,26 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- Who This Is For -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-6">
-        Who this is for
+        Dành cho ai
       </h2>
       <div class="space-y-4 text-[var(--color-secondary)] dark:text-[var(--color-muted)]">
-        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Engineers building agentic systems.</strong> Every chapter ends with "Apply This" — 5 transferable patterns with concrete adaptation advice. Steal the architecture, skip the mistakes.</p>
-        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Technical leaders evaluating architectures.</strong> Follow the narrative without reading every code block. Understand why decisions were made, not just what was built.</p>
-        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Anyone curious about how production AI tools work.</strong> Claude Code is used by hundreds of thousands of developers. This is how it works under the hood.</p>
+        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Kỹ sư xây dựng các hệ thống agentic.</strong> Mỗi chương kết thúc bằng mục "Apply This" — 5 mẫu thiết kế có thể ứng dụng cùng với lời khuyên thích ứng cụ thể. Học hỏi kiến trúc, bỏ qua những sai lầm.</p>
+        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Các nhà lãnh đạo kỹ thuật đang đánh giá các kiến trúc.</strong> Theo dõi câu chuyện mà không cần đọc từng khối mã. Hiểu rõ tại sao các quyết định được đưa ra chứ không chỉ là điều gì đã được xây dựng.</p>
+        <p><strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Bất kỳ ai tò mò về cách các công cụ AI hoạt động trong thực tế.</strong> Claude Code được hàng trăm ngàn nhà phát triển sử dụng. Đây là cách nó hoạt động ở bên trong.</p>
       </div>
     </section>
 
     <!-- Table of Contents -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-8">
-        Table of contents
+        Mục lục
       </h2>
       {parts.map((part) => {
         const partChapters = chapters.filter(c => part.chapters.includes(c.number));
         return (
           <div class="mb-10">
             <div class="flex items-baseline gap-3 mb-1">
-              <span class="text-xs font-semibold uppercase tracking-wider text-[var(--color-terracotta)]">Part {part.number}</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-[var(--color-terracotta)]">Phần {part.number}</span>
               <h3 class="text-lg font-bold text-[var(--color-charcoal)] dark:text-[var(--color-cream)] font-[var(--font-serif)]">{part.title}</h3>
             </div>
             <p class="text-sm italic text-[var(--color-muted)] mb-4">{part.epigraph}</p>
@@ -125,21 +125,21 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- How This Was Made -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-6">
-        How this book was made
+        Cuốn sách này được tạo ra như thế nào
       </h2>
       <div class="space-y-4 text-[var(--color-secondary)] dark:text-[var(--color-muted)] leading-relaxed">
         <p>
-          The source was extracted from npm source maps — the <code>.js.map</code> files that shipped with Claude Code contained a <code>sourcesContent</code> field with the full original TypeScript. Nearly two thousand files comprising the complete architecture.
+          Mã nguồn được trích xuất từ source maps của npm — các tập tin <code>.js.map</code> đi kèm với Claude Code chứa một trường <code>sourcesContent</code> bao gồm toàn bộ TypeScript gốc ban đầu. Gần hai ngàn tập tin cấu thành toàn bộ kiến trúc.
         </p>
         <p>
-          <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">36 AI agents</strong> analyzed and wrote the entire book in four phases:
+          <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">36 AI agents</strong> đã phân tích và viết toàn bộ cuốn sách trong bốn giai đoạn:
         </p>
         <div class="grid sm:grid-cols-2 gap-4 my-6">
           {[
-            { phase: 'Exploration', detail: '6 parallel agents read every file in the source tree' },
-            { phase: 'Analysis', detail: '12 agents wrote 494KB of raw technical documentation' },
-            { phase: 'Writing', detail: '15 agents rewrote everything from scratch as narrative chapters' },
-            { phase: 'Review & Revision', detail: '3 reviewers produced 900 lines of feedback; 3 agents applied all fixes' },
+            { phase: 'Khám phá', detail: '6 agent chạy song song đọc từng tập tin trong cây mã nguồn' },
+            { phase: 'Phân tích', detail: '12 agent viết 494KB tài liệu kỹ thuật thô' },
+            { phase: 'Viết sách', detail: '15 agent viết lại mọi thứ từ đầu thành các chương theo trình tự' },
+            { phase: 'Đánh giá & Chỉnh sửa', detail: '3 người đánh giá đưa ra 900 dòng phản hồi; 3 agent khác áp dụng toàn bộ sửa đổi' },
           ].map(({ phase, detail }) => (
             <div class="flex gap-3 items-start p-4 rounded-lg bg-[var(--color-beige)]/50 dark:bg-[var(--color-dark-surface)]/50">
               <span class="text-[var(--color-terracotta)] font-semibold text-sm shrink-0">{phase}</span>
@@ -148,7 +148,7 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
           ))}
         </div>
         <p>
-          The entire process — from source extraction to final revised book — took approximately <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">6 hours</strong>. A final audit pass ensured no verbatim source code remained — every code block was rewritten as pseudocode with different variable names.
+          Toàn bộ quy trình — từ lúc trích xuất đến cuốn sách hoàn chỉnh cuối cùng — mất khoảng <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">6 giờ</strong>. Một đợt rà soát cuối cùng đảm bảo không còn mã nguồn nguyên bản nào sót lại — mọi đoạn mã đều được viết lại dưới dạng mã giả (pseudocode) với các tên biến khác đi.
         </p>
       </div>
     </section>
@@ -156,21 +156,21 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- 10 Patterns -->
     <section class="mb-20">
       <h2 class="text-2xl font-bold font-[var(--font-serif)] text-[var(--color-charcoal)] dark:text-[var(--color-cream)] mb-3">
-        The 10 patterns that make it work
+        10 mẫu thiết kế làm nên hệ thống
       </h2>
-      <p class="text-[var(--color-muted)] mb-6">If you read nothing else, these are the architectural bets that define Claude Code.</p>
+      <p class="text-[var(--color-muted)] mb-6">Nếu bạn không nhớ gì khác, thì đây là những lựa chọn thiết kế cốt lõi trong Claude Code.</p>
       <div class="space-y-4">
         {[
-          { name: 'AsyncGenerator as agent loop', desc: 'yields Messages, typed Terminal return, natural backpressure and cancellation' },
-          { name: 'Speculative tool execution', desc: 'start read-only tools during model streaming, before the response completes' },
-          { name: 'Concurrent-safe batching', desc: 'partition tools by safety, run reads in parallel, serialize writes' },
-          { name: 'Fork agents for cache sharing', desc: 'parallel children share byte-identical prompt prefixes, saving ~95% input tokens' },
-          { name: '4-layer context compression', desc: 'snip, microcompact, collapse, autocompact — each lighter than the next' },
-          { name: 'File-based memory with LLM recall', desc: 'Sonnet side-query selects relevant memories, not keyword matching' },
-          { name: 'Two-phase skill loading', desc: 'frontmatter only at startup, full content on invocation' },
-          { name: 'Sticky latches for cache stability', desc: 'once a beta header is sent, never unset mid-session' },
-          { name: 'Slot reservation', desc: '8K default output cap, escalate to 64K on hit (saves context in 99% of requests)' },
-          { name: 'Hook config snapshot', desc: 'freeze at startup to prevent runtime injection attacks' },
+          { name: 'AsyncGenerator vận hành Agent Loop', desc: 'phát ra (yields) các Message, dùng kiểu trả về Terminal, xử lý tự nhiên backpressure và huỷ bỏ (cancellation)' },
+          { name: 'Speculative tool execution', desc: 'chạy sớm các công cụ chỉ đọc trong khi model đang streaming, ngay cả trước khi phản hồi hoàn tất' },
+          { name: 'Phân lô an toàn đồng thời (Concurrent-safe batching)', desc: 'phân nhóm công cụ theo độ an toàn, đọc song song, và ghi tuần tự' },
+          { name: 'Fork agents để chia sẻ bộ nhớ đệm', desc: 'các tiến trình con (children) chia sẻ các prompt prefix khớp từng byte, tiết kiệm ~95% input tokens' },
+          { name: 'Nén ngữ cảnh 4 lớp', desc: 'snip, microcompact, collapse, autocompact — mỗi lớp nhẹ hơn lớp trước đó' },
+          { name: 'Bộ nhớ dựa trên tệp tích hợp LLM-powered recall', desc: 'Sonnet side-query chọn lọc những đoạn nhớ liên quan, chứ không chỉ so khớp từ khóa' },
+          { name: 'Tải công cụ hai giai đoạn', desc: 'chỉ tải frontmatter khi khởi động, tải đầy đủ nội dung khi được gọi' },
+          { name: 'Sticky latches giữ ổn định cache', desc: 'một khi beta header được gửi đi, sẽ không bị huỷ bỏ (unset) giữa chừng của phiên làm việc' },
+          { name: 'Slot reservation', desc: 'giới hạn đầu ra mặc định 8K, mở rộng lên 64K khi đạt ngưỡng (tiết kiệm ngữ cảnh trong 99% yêu cầu)' },
+          { name: 'Hook config snapshot', desc: 'đóng băng lúc khởi động để ngăn chặn các cuộc tấn công injection lúc runtime' },
         ].map((p, i) => (
           <div class="flex gap-4 items-start">
             <span class="text-sm font-mono text-[var(--color-terracotta)] font-bold mt-1 w-6 shrink-0 text-right">{i + 1}</span>
@@ -186,14 +186,14 @@ const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
     <!-- Disclaimer -->
     <section class="mb-12 p-6 rounded-lg border border-[var(--color-border)] dark:border-[#333] bg-[var(--color-beige)]/50 dark:bg-[var(--color-dark-surface)]/50">
       <p class="text-sm text-[var(--color-secondary)] dark:text-[var(--color-muted)] leading-relaxed">
-        <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Purely educational.</strong> This book contains no source code from Claude Code — every code block is original pseudocode written to illustrate architectural patterns. The goal is to help engineers understand how production AI agents are built, not to reproduce proprietary software. The "NO'REILLY" cover is a parody/meme for illustrative purposes only — no affiliation with O'Reilly Media.
+        <strong class="text-[var(--color-charcoal)] dark:text-[var(--color-cream)]">Hoàn toàn vì mục đích giáo dục.</strong> Cuốn sách này không chứa mã nguồn gốc từ Claude Code — mọi khối mã đều là mã giả nguyên gốc (pseudocode) được viết nhằm minh họa cho các mẫu thiết kế. Mục tiêu là giúp các kỹ sư hiểu về cách những AI agents ở cấp độ production được xây dựng, không phải để sao chép phần mềm độc quyền. Bìa sách "NO'REILLY" chỉ là tài liệu chế (meme) với mục đích vui vẻ và trực quan — không có liên kết nào đến O'Reilly Media.
       </p>
     </section>
 
     <!-- Footer -->
     <footer class="text-center text-sm text-[var(--color-muted)] border-t border-[var(--color-border)] dark:border-[#333] pt-8 pb-12">
       <p>
-        An independent educational analysis. Not affiliated with, endorsed by, or sponsored by
+        Bản phân tích giáo dục độc lập. Không trực thuộc, không được chứng thực hoặc tài trợ bởi
         <a href="https://anthropic.com" class="text-[var(--color-terracotta)] hover:underline">Anthropic</a>.
       </p>
       <p class="mt-2">

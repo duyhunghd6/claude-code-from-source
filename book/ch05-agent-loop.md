@@ -1,47 +1,47 @@
-# Chapter 5: The Agent Loop
+# Chương 5: Agent Loop
 
-## The Beating Heart
+## Trái Tim Đập
 
-Chapter 4 showed how the API layer transforms configuration into streaming HTTP requests -- how the client is built, how system prompts are assembled, how responses arrive as server-sent events. That layer handles the *mechanics* of talking to the model. But a single API call is not an agent. An agent is a loop: call the model, execute tools, feed results back, call the model again, until the work is done.
+Chương 4 đã chỉ ra cách lớp API biến cấu hình thành các HTTP request dạng streaming -- client được dựng ra sao, system prompt được lắp ráp thế nào, và phản hồi đi vào dưới dạng server-sent events. Lớp đó xử lý *cơ chế* giao tiếp với model. Nhưng một API call đơn lẻ không phải agent. Agent là một vòng lặp: gọi model, thực thi tools, trả kết quả ngược lại, gọi model lần nữa, cho đến khi công việc hoàn tất.
 
-Every system has a center of gravity. In a database, it is the storage engine. In a compiler, it is the intermediate representation. In Claude Code, it is `query.ts` -- a single 1,730-line file containing the async generator that runs every interaction, from the first keystroke in the REPL to the last tool call of a headless `--print` invocation.
+Mọi hệ thống đều có một tâm điểm. Với database, đó là storage engine. Với compiler, đó là intermediate representation. Trong Claude Code, đó là `query.ts` -- một file dài 1.730 dòng chứa async generator chạy mọi tương tác, từ phím bấm đầu tiên trong REPL đến tool call cuối cùng của một lượt chạy headless `--print`.
 
-This is not an exaggeration. There is exactly one code path that talks to the model, executes tools, manages context, recovers from errors, and decides when to stop. That code path is the `query()` function. The REPL calls it. The SDK calls it. Sub-agents call it. The headless runner calls it. If you are using Claude Code, you are inside `query()`.
+Đây không phải cường điệu. Chỉ có đúng một code path trao đổi với model, thực thi tools, quản lý context, phục hồi lỗi, và quyết định khi nào dừng. Code path đó là hàm `query()`. REPL gọi nó. SDK gọi nó. Sub-agents gọi nó. Headless runner gọi nó. Nếu bạn đang dùng Claude Code, bạn đang ở bên trong `query()`.
 
-The file is dense, but it is not complex in the way that tangled inheritance hierarchies are complex. It is complex in the way that a submarine is complex: a single hull with many redundant systems, each one added because the ocean found a way in. Every `if` branch has a story. Every withheld error message represents a real bug where an SDK consumer disconnected mid-recovery. Every circuit breaker threshold was tuned against real sessions that burned thousands of API calls in infinite loops.
+File này dày đặc, nhưng không phức tạp theo kiểu các cây kế thừa rối rắm. Nó phức tạp theo kiểu một tàu ngầm phức tạp: một thân tàu duy nhất với nhiều hệ dự phòng, mỗi hệ được thêm vào vì đại dương đã tìm được đường tràn vào. Mỗi nhánh `if` đều có một câu chuyện. Mỗi thông báo lỗi bị giữ lại đại diện cho một bug thật nơi SDK consumer ngắt kết nối giữa chừng lúc hệ thống đang phục hồi. Mỗi ngưỡng circuit breaker đều được tinh chỉnh dựa trên các session thật từng đốt hàng nghìn API call trong vòng lặp vô hạn.
 
-This chapter traces the entire loop, start to finish. By the end, you will understand not just what happens, but why each mechanism exists and what breaks without it.
+Chương này lần theo toàn bộ vòng lặp, từ đầu đến cuối. Đến cuối chương, bạn sẽ hiểu không chỉ điều gì xảy ra, mà còn vì sao từng cơ chế tồn tại và điều gì sẽ hỏng nếu thiếu nó.
 
 ---
 
-## Why an Async Generator
+## Vì sao dùng Async Generator
 
-The first architectural question: why is the agent loop a generator and not a callback-based event emitter?
+Câu hỏi kiến trúc đầu tiên: vì sao agent loop là generator thay vì event emitter dựa trên callback?
 
 ```typescript
 // Simplified — shows the concept, not the exact types
 async function* agentLoop(params: LoopParams): AsyncGenerator<Message | Event, TerminalReason>
 ```
 
-The actual signature yields several message and event types and returns a discriminated union encoding why the loop stopped.
+Chữ ký thật sự yield nhiều kiểu message và event, đồng thời trả về một discriminated union mã hóa lý do vòng lặp dừng.
 
-Three reasons, in order of importance.
+Ba lý do, theo thứ tự quan trọng.
 
-**Backpressure.** An event emitter fires whether the consumer is ready or not. A generator yields only when the consumer calls `.next()`. When the REPL's React renderer is busy painting the previous frame, the generator naturally pauses. When an SDK consumer is processing a tool result, the generator waits. No buffer overflow, no dropped messages, no "fast producer / slow consumer" problem.
+**Backpressure.** Event emitter bắn sự kiện dù consumer đã sẵn sàng hay chưa. Generator chỉ yield khi consumer gọi `.next()`. Khi React renderer của REPL đang bận vẽ frame trước đó, generator tự nhiên dừng lại. Khi một SDK consumer đang xử lý kết quả tool, generator chờ. Không tràn buffer, không rơi message, không có bài toán "nhà sản xuất nhanh / nhà tiêu thụ chậm".
 
-**Return value semantics.** The generator's return type is `Terminal` -- a discriminated union encoding exactly why the loop stopped. Was it a normal completion? A user abort? A token budget exhaustion? A stop hook intervention? A max-turns limit? An unrecoverable model error? There are 10 distinct terminal states. Callers do not need to subscribe to an "end" event and hope the payload contains the reason. They get it as a typed return value from `for await...of` or `yield*`.
+**Ngữ nghĩa giá trị trả về.** Kiểu trả về của generator là `Terminal` -- một discriminated union mã hóa chính xác vì sao vòng lặp dừng. Hoàn tất bình thường? Người dùng abort? Cạn token budget? Stop hook can thiệp? Chạm giới hạn max-turns? Lỗi model không thể phục hồi? Có 10 terminal state riêng biệt. Caller không cần subscribe vào một sự kiện "end" rồi cầu may payload có chứa lý do. Họ nhận nó như một giá trị trả về có kiểu từ `for await...of` hoặc `yield*`.
 
-**Composability via `yield*`.** The outer `query()` function delegates to `queryLoop()` with `yield*`, which transparently forwards every yielded value and the final return. Sub-generators like `handleStopHooks()` use the same pattern. This creates a clean chain of responsibility without callbacks, without promises wrapping promises, without event forwarding boilerplate.
+**Khả năng tổ hợp qua `yield*`.** Hàm `query()` bên ngoài ủy quyền cho `queryLoop()` bằng `yield*`, nhờ đó chuyển tiếp trong suốt mọi giá trị được yield và cả giá trị trả về cuối cùng. Các sub-generator như `handleStopHooks()` dùng cùng mẫu này. Kết quả là một chain of responsibility sạch sẽ, không callback, không promise bọc promise, không boilerplate chuyển tiếp event.
 
-The choice has a cost -- async generators in JavaScript cannot be "rewound" or forked. But the agent loop does not need either. It is a strictly forward-moving state machine.
+Lựa chọn này có chi phí -- async generator trong JavaScript không thể "quay lại" hay fork. Nhưng agent loop không cần cả hai. Nó là một state machine chỉ đi tiến.
 
-One more subtlety: the `function*` syntax makes the function *lazy*. The body does not execute until the first `.next()` call. This means `query()` returns instantly -- all the heavy initialization (config snapshot, memory prefetch, budget tracker) happens only when the consumer starts pulling values. In the REPL, this means the React rendering pipeline is already set up before the first line of the loop runs.
+Một điểm tinh tế nữa: cú pháp `function*` làm hàm trở thành *lazy*. Phần thân không chạy cho đến lần gọi `.next()` đầu tiên. Nghĩa là `query()` trả về ngay lập tức -- mọi khởi tạo nặng (config snapshot, memory prefetch, budget tracker) chỉ diễn ra khi consumer bắt đầu kéo giá trị. Trong REPL, điều này có nghĩa pipeline render React đã sẵn sàng trước khi dòng đầu tiên của vòng lặp chạy.
 
 ---
 
-## What Callers Provide
+## Những gì Caller cung cấp
 
-Before tracing the loop, it helps to know what goes in:
+Trước khi lần theo vòng lặp, nên biết đầu vào gồm những gì:
 
 ```typescript
 // Simplified — illustrates the key fields
@@ -57,29 +57,29 @@ type LoopParams = {
 }
 ```
 
-The notable fields:
+Các trường đáng chú ý:
 
-- **`querySource`**: A string discriminant like `'repl_main_thread'`, `'sdk'`, `'agent:xyz'`, `'compact'`, or `'session_memory'`. Many conditionals branch on this. The compact agent uses `querySource: 'compact'` so the blocking limit guard does not deadlock (the compact agent needs to run to *reduce* the token count).
+- **`querySource`**: Một chuỗi discriminant như `'repl_main_thread'`, `'sdk'`, `'agent:xyz'`, `'compact'`, hoặc `'session_memory'`. Nhiều nhánh điều kiện rẽ theo trường này. Compact agent dùng `querySource: 'compact'` để guard giới hạn chặn không gây deadlock (compact agent cần chạy để *giảm* số token).
 
-- **`taskBudget`**: The API-level task budget (`output_config.task_budget`). Distinct from the `+500k` auto-continue token budget feature. `total` is the budget for the whole agentic turn; `remaining` is computed per iteration from cumulative API usage and adjusted across compaction boundaries.
+- **`taskBudget`**: API-level task budget (`output_config.task_budget`). Tách biệt với tính năng token budget auto-continue `+500k`. `total` là ngân sách cho toàn bộ lượt agentic turn; `remaining` được tính theo từng iteration từ mức dùng API tích lũy và được điều chỉnh xuyên qua các ranh giới compaction.
 
-- **`deps`**: Optional dependency injection. Defaults to `productionDeps()`. This is the seam where tests swap in fake model calls, fake compaction, and deterministic UUIDs.
+- **`deps`**: Dependency injection tùy chọn. Mặc định là `productionDeps()`. Đây là đường seam nơi test hoán đổi vào các model call giả, compaction giả, và UUID mang tính quyết định.
 
-- **`canUseTool`**: A function that returns whether a given tool is allowed. This is the permission layer -- it checks trust settings, hook decisions, and the current permission mode.
-
----
-
-## The Two-Layer Entry Point
-
-The public API is a thin wrapper around the real loop:
-
-The outer function wraps the inner loop, tracking which queued commands were consumed during the turn. After the inner loop completes, consumed commands are marked as `'completed'`. If the loop throws or the generator is closed via `.return()`, the completion notifications never fire -- a failed turn should not mark commands as successfully processed. Commands queued during a turn (via `/` slash commands or task notifications) are marked `'started'` inside the loop and `'completed'` in the wrapper. If the loop throws or the generator is closed via `.return()`, the completion notifications never fire. This is intentional -- a failed turn should not mark commands as successfully processed.
+- **`canUseTool`**: Một hàm trả về liệu tool được phép dùng hay không. Đây là tầng permission -- nó kiểm tra trust settings, quyết định từ hooks, và permission mode hiện tại.
 
 ---
 
-## The State Object
+## Điểm vào hai lớp
 
-The loop carries its state in a single typed object:
+API công khai là một lớp bọc mỏng quanh vòng lặp thực:
+
+Hàm bên ngoài bọc vòng lặp bên trong, theo dõi những command đã xếp hàng nào được tiêu thụ trong lượt chạy. Sau khi vòng lặp bên trong hoàn tất, các command đã tiêu thụ được đánh dấu `'completed'`. Nếu vòng lặp ném lỗi hoặc generator bị đóng qua `.return()`, thông báo hoàn tất sẽ không bao giờ phát ra -- một lượt chạy thất bại không nên đánh dấu command là đã xử lý thành công. Các command được xếp hàng trong khi đang chạy (qua slash commands `/` hoặc task notifications) được đánh dấu `'started'` ở bên trong vòng lặp và `'completed'` ở lớp bọc. Nếu vòng lặp ném lỗi hoặc generator bị đóng qua `.return()`, thông báo hoàn tất sẽ không bao giờ phát ra. Đây là chủ ý -- một lượt chạy thất bại không nên đánh dấu command là đã xử lý thành công.
+
+---
+
+## Đối tượng trạng thái
+
+Vòng lặp mang trạng thái của nó trong một đối tượng có kiểu duy nhất:
 
 ```typescript
 // Simplified — illustrates the key fields
@@ -92,24 +92,24 @@ type LoopState = {
 }
 ```
 
-Ten fields. Each one earns its place:
+Mười trường. Mỗi trường đều có lý do tồn tại:
 
 | Field | Why It Exists |
 |-------|---------------|
-| `messages` | The conversation history, grown each iteration |
-| `toolUseContext` | Mutable context: tools, abort controller, agent state, options |
-| `autoCompactTracking` | Tracks compaction state: turn counter, turn ID, consecutive failures, compacted flag |
-| `maxOutputTokensRecoveryCount` | How many multi-turn recovery attempts for output token limits (max 3) |
-| `hasAttemptedReactiveCompact` | One-shot guard against infinite reactive compaction loops |
-| `maxOutputTokensOverride` | Set to 64K during escalation, cleared after |
-| `pendingToolUseSummary` | A promise from the previous iteration's Haiku summary, resolved during current streaming |
-| `stopHookActive` | Prevents re-running stop hooks after a blocking retry |
-| `turnCount` | Monotonic counter, checked against `maxTurns` |
-| `transition` | Why the previous iteration continued -- `undefined` on first iteration |
+| `messages` | Lịch sử hội thoại, được mở rộng sau mỗi iteration |
+| `toolUseContext` | Context có thể thay đổi: tools, abort controller, agent state, options |
+| `autoCompactTracking` | Theo dõi trạng thái compaction: bộ đếm lượt, turn ID, số lần thất bại liên tiếp, cờ compacted |
+| `maxOutputTokensRecoveryCount` | Số lần thử phục hồi multi-turn cho giới hạn output token (tối đa 3) |
+| `hasAttemptedReactiveCompact` | Cờ one-shot để chặn vòng lặp compaction phản ứng vô hạn |
+| `maxOutputTokensOverride` | Đặt thành 64K khi escalation, rồi xóa sau đó |
+| `pendingToolUseSummary` | Một promise từ Haiku summary của iteration trước, được resolve trong lúc streaming hiện tại |
+| `stopHookActive` | Ngăn chạy lại stop hooks sau một lượt retry bị chặn |
+| `turnCount` | Bộ đếm tăng đơn điệu, được kiểm tra với `maxTurns` |
+| `transition` | Lý do iteration trước tiếp tục -- `undefined` ở iteration đầu |
 
-### Immutable Transitions in a Mutable Loop
+### Immutable Transitions in a Mutable Loop (chuyển tiếp bất biến trong vòng lặp khả biến)
 
-Here is the pattern that appears at every `continue` statement in the loop:
+Đây là mẫu xuất hiện ở mọi lệnh `continue` trong vòng lặp:
 
 ```typescript
 const next: State = {
@@ -127,13 +127,13 @@ const next: State = {
 state = next
 ```
 
-Every continue site constructs a complete new `State` object. Not `state.messages = newMessages`. Not `state.turnCount++`. A full reconstruction. The benefit is that every transition is self-documenting. You can read any `continue` site and see exactly which fields change and which are preserved. The `transition` field on the new state records *why* the loop is continuing -- tests assert on this to verify that the correct recovery path fired.
+Mọi vị trí `continue` đều dựng một đối tượng `State` mới hoàn chỉnh. Không phải `state.messages = newMessages`. Không phải `state.turnCount++`. Mà là tái tạo đầy đủ. Lợi ích là mỗi transition tự mô tả chính nó. Bạn có thể đọc bất kỳ vị trí `continue` nào và thấy chính xác trường nào đổi, trường nào giữ nguyên. Trường `transition` trong trạng thái mới ghi lại *vì sao* vòng lặp đang tiếp tục -- test dùng assert trên trường này để xác minh đúng nhánh phục hồi đã kích hoạt.
 
 ---
 
-## The Loop Body
+## Thân vòng lặp
 
-Here is the full execution flow of a single iteration, compressed to its skeleton:
+Đây là luồng thực thi đầy đủ của một iteration, nén thành khung xương:
 
 ```mermaid
 stateDiagram-v2
@@ -181,13 +181,13 @@ stateDiagram-v2
     end note
 ```
 
-That is the entire loop. Every feature in Claude Code -- from memory to sub-agents to error recovery -- feeds into or consumes from this single iteration structure.
+Đó là toàn bộ vòng lặp. Mọi tính năng trong Claude Code -- từ memory đến sub-agents đến phục hồi lỗi -- đều đổ vào hoặc lấy ra từ cấu trúc iteration duy nhất này.
 
 ---
 
-## Context Management: Four Compression Layers
+## Quản lý context: bốn lớp nén
 
-Before each API call, the message history passes through up to four context management stages. They run in a specific order, and that order matters.
+Trước mỗi API call, lịch sử message đi qua tối đa bốn giai đoạn quản lý context. Chúng chạy theo thứ tự cụ thể, và thứ tự đó rất quan trọng.
 
 ```mermaid
 graph TD
@@ -207,27 +207,27 @@ graph TD
 
 ### Layer 0: Tool Result Budget
 
-Before any compression, `applyToolResultBudget()` enforces per-message size limits on tool results. Tools without a finite `maxResultSizeChars` are exempted.
+Trước mọi bước nén, `applyToolResultBudget()` áp đặt giới hạn kích thước theo từng message cho kết quả tool. Các tool không có `maxResultSizeChars` hữu hạn sẽ được miễn.
 
 ### Layer 1: Snip Compact
 
-The lightest operation. Snip physically removes old messages from the array, yielding a boundary message to signal the removal to the UI. It reports how many tokens were freed, and that number is plumbed into auto-compact's threshold check.
+Thao tác nhẹ nhất. Snip loại bỏ vật lý các message cũ khỏi mảng, đồng thời yield một boundary message để báo cho UI rằng đã có phần bị cắt bỏ. Nó báo số token đã được giải phóng, và con số này được đưa vào kiểm tra ngưỡng auto-compact.
 
 ### Layer 2: Microcompact
 
-Microcompact removes tool results that are no longer needed, identified by `tool_use_id`. For cached microcompact (which edits the API cache), the boundary message is deferred until after the API response. The reason: client-side token estimates are unreliable. The actual `cache_deleted_input_tokens` from the API response tells you what was really freed.
+Microcompact loại bỏ các tool result không còn cần nữa, xác định bằng `tool_use_id`. Với cached microcompact (chỉnh sửa API cache), boundary message bị hoãn cho đến sau API response. Lý do: ước lượng token phía client không đáng tin. `cache_deleted_input_tokens` thực tế từ API response mới cho biết chính xác đã giải phóng được bao nhiêu.
 
 ### Layer 3: Context Collapse
 
-Context collapse replaces spans of conversation with summaries. It runs before auto-compact, and the ordering is deliberate: if collapse reduces the context below the auto-compact threshold, auto-compact becomes a no-op. This preserves granular context instead of replacing everything with a single monolithic summary.
+Context collapse thay thế các đoạn hội thoại bằng bản tóm tắt. Nó chạy trước auto-compact, và thứ tự này là có chủ đích: nếu collapse giảm context xuống dưới ngưỡng auto-compact, auto-compact sẽ trở thành no-op. Cách này giữ lại context dạng hạt thay vì thay tất cả bằng một bản tóm tắt nguyên khối.
 
 ### Layer 4: Auto-Compact
 
-The heaviest operation: it forks an entire Claude conversation to summarize the history. The implementation has a circuit breaker -- after 3 consecutive failures, it stops trying. This prevents the nightmare scenario observed in production: sessions stuck over the context limit burning 250K API calls per day in an infinite compact-fail-retry loop.
+Thao tác nặng nhất: nó fork cả một cuộc hội thoại Claude để tóm tắt lịch sử. Cách cài đặt có circuit breaker -- sau 3 lần thất bại liên tiếp, nó dừng thử. Điều này ngăn kịch bản ác mộng từng thấy trong production: các session kẹt quá giới hạn context, đốt 250K API call mỗi ngày trong vòng lặp compact-fail-retry vô hạn.
 
 ### Auto-Compact Thresholds
 
-The thresholds are derived from the model's context window:
+Các ngưỡng được suy ra từ context window của model:
 
 ```
 effectiveContextWindow = contextWindow - min(modelMaxOutput, 20000)
@@ -239,23 +239,23 @@ Thresholds (relative to effectiveContextWindow):
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `AUTOCOMPACT_BUFFER_TOKENS` | 13,000 | Headroom below effective window for auto-compact trigger |
-| `MANUAL_COMPACT_BUFFER_TOKENS` | 3,000 | Reserves space so `/compact` still works |
-| `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` | 3 | Circuit breaker threshold |
+| `AUTOCOMPACT_BUFFER_TOKENS` | 13,000 | Khoảng đệm dưới effective window để kích hoạt auto-compact |
+| `MANUAL_COMPACT_BUFFER_TOKENS` | 3,000 | Chừa chỗ để `/compact` vẫn hoạt động |
+| `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` | 3 | Ngưỡng circuit breaker |
 
-The 13,000-token buffer means auto-compact fires well before the hard limit. The gap between the auto-compact threshold and the blocking limit is where reactive compact operates -- if the proactive auto-compact fails or is disabled, reactive compact catches the 413 error and compacts on demand.
+Khoảng đệm 13.000 token khiến auto-compact kích hoạt sớm hơn nhiều so với hard limit. Khoảng cách giữa ngưỡng auto-compact và blocking limit là nơi reactive compact hoạt động -- nếu auto-compact chủ động thất bại hoặc bị tắt, reactive compact bắt lỗi 413 và compact theo nhu cầu.
 
 ### Token Counting
 
-The canonical function `tokenCountWithEstimation` combines authoritative API-reported token counts (from the most recent response) with a rough estimate for messages added after that response. The approximation is conservative -- it errs toward higher counts, which means auto-compact fires slightly early rather than slightly late.
+Hàm chuẩn `tokenCountWithEstimation` kết hợp số token chuẩn do API báo cáo (từ phản hồi gần nhất) với một ước lượng thô cho các message thêm vào sau phản hồi đó. Xấp xỉ này mang tính bảo thủ -- nó thiên về đếm cao hơn, nghĩa là auto-compact kích hoạt hơi sớm thay vì hơi muộn.
 
 ---
 
 ## Model Streaming
 
-### The callModel() Loop
+### The callModel() Loop (vòng lặp gọi model)
 
-The API call happens inside a `while(attemptWithFallback)` loop that enables model fallback:
+API call diễn ra bên trong một vòng `while(attemptWithFallback)` để hỗ trợ model fallback:
 
 ```typescript
 let attemptWithFallback = true
@@ -276,11 +276,11 @@ while (attemptWithFallback) {
 }
 ```
 
-When enabled, a `StreamingToolExecutor` starts executing tools as soon as their `tool_use` blocks arrive during streaming -- not after the full response completes. How tools are orchestrated into concurrent batches is the subject of Chapter 7.
+Khi bật, một `StreamingToolExecutor` bắt đầu thực thi tools ngay khi các khối `tool_use` xuất hiện trong luồng -- không chờ phản hồi đầy đủ kết thúc. Cách tools được điều phối thành các batch đồng thời là chủ đề của Chương 7.
 
-### The Withholding Pattern
+### The Withholding Pattern (mẫu giữ lại lỗi)
 
-This is one of the most important patterns in the file. Recoverable errors are suppressed from the yield stream:
+Đây là một trong những mẫu quan trọng nhất trong file. Các lỗi có thể phục hồi bị chặn không cho đi ra luồng yield:
 
 ```typescript
 let withheld = false
@@ -290,17 +290,17 @@ if (isWithheldMaxOutputTokens(message)) withheld = true
 if (!withheld) yield yieldMessage
 ```
 
-Why withhold? Because SDK consumers -- Cowork, the desktop app -- terminate the session on any message with an `error` field. If you yield a prompt-too-long error and then successfully recover via reactive compaction, the consumer has already disconnected. The recovery loop keeps running, but nobody is listening. So the error is withheld, pushed to `assistantMessages` so downstream recovery checks can find it. If all recovery paths fail, the withheld message is finally surfaced.
+Vì sao phải giữ lại? Vì các SDK consumer -- Cowork, ứng dụng desktop -- sẽ kết thúc session nếu gặp bất kỳ message nào có trường `error`. Nếu bạn yield lỗi prompt-too-long rồi sau đó phục hồi thành công bằng reactive compaction, consumer đã ngắt kết nối trước đó. Vòng phục hồi vẫn chạy, nhưng không còn ai lắng nghe. Vì vậy lỗi bị giữ lại, đẩy vào `assistantMessages` để các bước kiểm tra phục hồi phía sau có thể tìm thấy. Nếu mọi nhánh phục hồi đều thất bại, message bị giữ lại mới được đưa ra.
 
 ### Model Fallback
 
-When a `FallbackTriggeredError` is caught (high demand on the primary model), the loop switches models and retries. But thinking signatures are model-bound -- replaying a protected-thinking block from one model to a different fallback model causes a 400 error. The code strips signature blocks before retry. All orphaned assistant messages from the failed attempt are tombstoned so the UI removes them.
+Khi bắt được `FallbackTriggeredError` (model chính đang quá tải), vòng lặp chuyển model và thử lại. Nhưng thinking signatures gắn với model -- phát lại một khối protected-thinking từ model này sang fallback model khác sẽ gây lỗi 400. Mã nguồn loại bỏ các khối signature trước khi thử lại. Mọi assistant message mồ côi từ lần thử thất bại bị tombstone để UI gỡ chúng đi.
 
 ---
 
-## Error Recovery: The Escalation Ladder
+## Error Recovery: The Escalation Ladder (thang leo thang phục hồi lỗi)
 
-Error recovery in query.ts is not a single strategy. It is a ladder of increasingly aggressive interventions, each triggered when the previous one fails.
+Phục hồi lỗi trong query.ts không phải một chiến lược đơn lẻ. Nó là một chiếc thang gồm các can thiệp ngày càng mạnh, mỗi can thiệp được kích hoạt khi cái trước đó thất bại.
 
 ```mermaid
 graph TD
@@ -326,154 +326,154 @@ graph TD
     style S3 fill:#f66
 ```
 
-### The Death Spiral Guard
+### The Death Spiral Guard (lá chắn vòng xoáy chết)
 
-The most dangerous failure mode is an infinite loop. The code has multiple guards:
+Failure mode nguy hiểm nhất là vòng lặp vô hạn. Mã nguồn có nhiều lớp guard:
 
-1. **`hasAttemptedReactiveCompact`**: One-shot flag. Reactive compact fires once per error type.
-2. **`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3`**: Hard cap on multi-turn recovery attempts.
-3. **Circuit breaker on auto-compact**: After 3 consecutive failures, auto-compact stops trying entirely.
-4. **No stop hooks on error responses**: The code explicitly returns before reaching stop hooks when the last message is an API error. The comment explains: "error -> hook blocking -> retry -> error -> ... (the hook injects more tokens each cycle)."
-5. **Preserved `hasAttemptedReactiveCompact` across stop hook retries**: When a stop hook returns blocking errors and forces a retry, the reactive compact guard is preserved. The comment documents the bug: "Resetting to false here caused an infinite loop burning thousands of API calls."
+1. **`hasAttemptedReactiveCompact`**: Cờ one-shot. Reactive compact chỉ kích hoạt một lần cho mỗi loại lỗi.
+2. **`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3`**: Giới hạn cứng cho số lần thử phục hồi multi-turn.
+3. **Circuit breaker trên auto-compact**: Sau 3 lần thất bại liên tiếp, auto-compact dừng thử hoàn toàn.
+4. **Không chạy stop hooks trên phản hồi lỗi**: Mã nguồn trả về rõ ràng trước khi chạm đến stop hooks khi message cuối là lỗi API. Comment giải thích: "error -> hook blocking -> retry -> error -> ... (the hook injects more tokens each cycle)."
+5. **Giữ nguyên `hasAttemptedReactiveCompact` qua các lần retry do stop hook**: Khi stop hook trả lỗi blocking và ép retry, reactive compact guard được giữ nguyên. Comment ghi lại bug: "Resetting to false here caused an infinite loop burning thousands of API calls."
 
-Each of these guards was added because someone hit the failure mode in production.
+Mỗi guard này đều được thêm vào vì từng có người đụng đúng failure mode đó trong production.
 
 ---
 
-## Worked Example: "Fix the Bug in auth.ts"
+## Ví dụ chạy thực tế: "Fix the Bug in auth.ts"
 
-To make the loop concrete, let us trace a real interaction through three iterations.
+Để vòng lặp trở nên cụ thể, ta lần theo một tương tác thật qua ba iteration.
 
-**The user types:** `Fix the null pointer bug in src/auth/validate.ts`
+**Người dùng gõ:** `Fix the null pointer bug in src/auth/validate.ts`
 
-**Iteration 1: The model reads the file.**
+**Iteration 1: Model đọc file.**
 
-The loop enters. Context management runs (no compression needed -- the conversation is short). The model streams a response: "Let me look at the file." It emits a single `tool_use` block: `Read({ file_path: "src/auth/validate.ts" })`. The streaming executor sees a concurrency-safe tool and starts it immediately. By the time the model finishes its response text, the file contents are already in memory.
+Vòng lặp bắt đầu. Quản lý context chạy (không cần nén -- hội thoại còn ngắn). Model stream phản hồi: "Let me look at the file." Nó phát ra một khối `tool_use` duy nhất: `Read({ file_path: "src/auth/validate.ts" })`. Streaming executor thấy đây là tool an toàn cho thực thi đồng thời và chạy ngay lập tức. Đến khi model kết thúc phần text phản hồi, nội dung file đã nằm sẵn trong memory.
 
-Post-stream processing: the model used a tool, so we enter the tool-use path. The Read result (file contents with line numbers) is pushed to `toolResults`. A Haiku summary promise is kicked off in the background. State is reconstructed with the new messages, `transition: { reason: 'next_turn' }`, and the loop continues.
+Xử lý sau stream: model có dùng tool, nên ta đi vào nhánh tool-use. Kết quả Read (nội dung file kèm số dòng) được đẩy vào `toolResults`. Một promise tóm tắt Haiku được khởi chạy nền. Trạng thái được dựng lại với các message mới, `transition: { reason: 'next_turn' }`, và vòng lặp tiếp tục.
 
-**Iteration 2: The model edits the file.**
+**Iteration 2: Model sửa file.**
 
-Context management runs again (still under the threshold). The model streams: "I see the bug on line 42 -- `userId` can be null." It emits `Edit({ file_path: "src/auth/validate.ts", old_string: "const user = getUser(userId)", new_string: "if (!userId) return { error: 'unauthorized' }\nconst user = getUser(userId)" })`.
+Quản lý context chạy lại (vẫn dưới ngưỡng). Model stream: "I see the bug on line 42 -- `userId` can be null." Nó phát `Edit({ file_path: "src/auth/validate.ts", old_string: "const user = getUser(userId)", new_string: "if (!userId) return { error: 'unauthorized' }\nconst user = getUser(userId)" })`.
 
-Edit is not concurrency-safe, so the streaming executor queues it until the response completes. Then the 14-step execution pipeline fires: Zod validation passes, input backfill expands the path, the PreToolUse hook checks permissions (the user approves), and the edit is applied. The pending Haiku summary from iteration 1 resolves during streaming -- its result is yielded as a `ToolUseSummaryMessage`. State is reconstructed, loop continues.
+Edit không concurrency-safe, nên streaming executor xếp hàng cho đến khi phản hồi hoàn tất. Sau đó pipeline thực thi 14 bước chạy: Zod validation qua, input backfill mở rộng đường dẫn, hook PreToolUse kiểm tra permission (người dùng chấp thuận), rồi chỉnh sửa được áp dụng. Promise Haiku summary chờ từ iteration 1 resolve trong lúc streaming -- kết quả của nó được yield dưới dạng `ToolUseSummaryMessage`. Trạng thái được dựng lại, vòng lặp tiếp tục.
 
-**Iteration 3: The model declares completion.**
+**Iteration 3: Model tuyên bố hoàn tất.**
 
-The model streams: "I've fixed the null pointer bug by adding a guard clause." No `tool_use` blocks. We enter the "done" path. Prompt-too-long recovery? Not needed. Max output tokens? No. Stop hooks run -- no blocking errors. Token budget check passes. The loop returns `{ reason: 'completed' }`.
+Model stream: "I've fixed the null pointer bug by adding a guard clause." Không có khối `tool_use`. Ta vào nhánh "done". Phục hồi prompt-too-long? Không cần. Max output tokens? Không. Stop hooks chạy -- không có lỗi blocking. Kiểm tra token budget qua. Vòng lặp trả về `{ reason: 'completed' }`.
 
-Total: three API calls, two tool executions, one user permission prompt. The loop handled streaming tool execution, Haiku summarization overlapping with the API call, and the full permission pipeline -- all through the same `while(true)` structure.
+Tổng cộng: ba API call, hai lần thực thi tool, một lần nhắc người dùng cấp quyền. Vòng lặp xử lý thực thi tool dạng streaming, tóm tắt Haiku chồng chéo với API call, và toàn bộ pipeline permission -- tất cả qua cùng một cấu trúc `while(true)`.
 
 ---
 
 ## Token Budgets
 
-Users can request a token budget for a turn (e.g., `+500k`). The budget system decides whether to continue or stop after the model completes a response.
+Người dùng có thể yêu cầu token budget cho một lượt chạy (ví dụ `+500k`). Hệ thống budget quyết định nên tiếp tục hay dừng sau khi model hoàn tất phản hồi.
 
-`checkTokenBudget` makes a binary continue/stop decision with three rules:
+`checkTokenBudget` đưa ra quyết định tiếp tục/dừng dạng nhị phân với ba quy tắc:
 
-1. **Subagents always stop.** Budget is a top-level concept only.
-2. **Completion threshold at 90%.** If `turnTokens < budget * 0.9`, continue.
-3. **Diminishing returns detection.** After 3+ continuations, if both the current and previous delta are below 500 tokens, stop early. The model is producing less and less output per continuation.
+1. **Subagents luôn dừng.** Budget chỉ là khái niệm ở mức top-level.
+2. **Ngưỡng hoàn tất ở 90%.** Nếu `turnTokens < budget * 0.9`, tiếp tục.
+3. **Phát hiện diminishing returns.** Sau 3+ lần continuation, nếu cả delta hiện tại lẫn delta trước đó đều dưới 500 token, dừng sớm. Model đang tạo ra ngày càng ít output cho mỗi lần continuation.
 
-When the decision is "continue," a nudge message is injected telling the model how much budget remains.
-
----
-
-## Stop Hooks: Forcing the Model to Keep Working
-
-Stop hooks run when the model finishes without requesting any tool use -- it thinks it is done. The hooks evaluate whether it actually *is* done.
-
-The pipeline runs template job classification, fires background tasks (prompt suggestion, memory extraction), and then executes stop hooks proper. When a stop hook returns blocking errors -- "you said you were done, but the linter found 3 errors" -- the errors are appended to the message history and the loop continues with `stopHookActive: true`. This flag prevents re-running the same hooks on the retry.
-
-When a stop hook signals `preventContinuation`, the loop exits immediately with `{ reason: 'stop_hook_prevented' }`.
+Khi quyết định là "continue," một nudge message được chèn vào để báo model còn bao nhiêu budget.
 
 ---
 
-## State Transitions: The Complete Catalog
+## Stop Hooks: ép model tiếp tục làm việc
 
-Every exit from the loop is one of two types: a `Terminal` (the loop returns) or a `Continue` (the loop iterates).
+Stop hooks chạy khi model kết thúc mà không yêu cầu tool use nào -- nó nghĩ rằng đã xong. Hooks đánh giá liệu nó *thực sự* đã xong hay chưa.
+
+Pipeline chạy phân loại template job, kích hoạt các background task (prompt suggestion, memory extraction), rồi mới thực thi stop hooks chính. Khi stop hook trả về lỗi blocking -- "you said you were done, but the linter found 3 errors" -- các lỗi được nối vào lịch sử message và vòng lặp tiếp tục với `stopHookActive: true`. Cờ này ngăn chạy lại cùng hooks ở lần retry.
+
+Khi stop hook phát tín hiệu `preventContinuation`, vòng lặp thoát ngay với `{ reason: 'stop_hook_prevented' }`.
+
+---
+
+## State Transitions: danh mục đầy đủ
+
+Mọi lối ra khỏi vòng lặp thuộc một trong hai loại: `Terminal` (vòng lặp return) hoặc `Continue` (vòng lặp lặp tiếp).
 
 ### Terminal States (10 reasons)
 
 | Reason | Trigger |
 |--------|---------|
-| `blocking_limit` | Token count at hard limit, auto-compact OFF |
-| `image_error` | ImageSizeError, ImageResizeError, or unrecoverable media error |
-| `model_error` | Unrecoverable API/model exception |
-| `aborted_streaming` | User abort during model streaming |
-| `prompt_too_long` | Withheld 413 after all recovery exhausted |
-| `completed` | Normal completion (no tool use, or budget exhausted, or API error) |
-| `stop_hook_prevented` | Stop hook explicitly blocked continuation |
-| `aborted_tools` | User abort during tool execution |
-| `hook_stopped` | PreToolUse hook stopped continuation |
-| `max_turns` | Hit the `maxTurns` limit |
+| `blocking_limit` | Số token chạm hard limit, auto-compact OFF |
+| `image_error` | ImageSizeError, ImageResizeError, hoặc lỗi media không thể phục hồi |
+| `model_error` | Ngoại lệ API/model không thể phục hồi |
+| `aborted_streaming` | Người dùng abort trong lúc model streaming |
+| `prompt_too_long` | Lỗi 413 bị giữ lại sau khi mọi phục hồi đã cạn |
+| `completed` | Hoàn tất bình thường (không tool use, hoặc cạn budget, hoặc lỗi API) |
+| `stop_hook_prevented` | Stop hook chặn continuation một cách tường minh |
+| `aborted_tools` | Người dùng abort trong lúc tool execution |
+| `hook_stopped` | Hook PreToolUse dừng continuation |
+| `max_turns` | Chạm giới hạn `maxTurns` |
 
 ### Continue States (7 reasons)
 
 | Reason | Trigger |
 |--------|---------|
-| `collapse_drain_retry` | Context collapse drained staged collapses on 413 |
-| `reactive_compact_retry` | Reactive compact succeeded after 413 or media error |
-| `max_output_tokens_escalate` | 8K cap hit, escalating to 64K |
-| `max_output_tokens_recovery` | 64K still hit, multi-turn recovery (up to 3 attempts) |
-| `stop_hook_blocking` | Stop hook returned blocking errors, must retry |
-| `token_budget_continuation` | Token budget not exhausted, nudge message injected |
-| `next_turn` | Normal tool-use continuation |
+| `collapse_drain_retry` | Context collapse đã xả các collapse xếp hàng khi gặp 413 |
+| `reactive_compact_retry` | Reactive compact thành công sau 413 hoặc lỗi media |
+| `max_output_tokens_escalate` | Chạm trần 8K, đang nâng lên 64K |
+| `max_output_tokens_recovery` | Vẫn chạm trần 64K, phục hồi multi-turn (tối đa 3 lần) |
+| `stop_hook_blocking` | Stop hook trả lỗi blocking, phải retry |
+| `token_budget_continuation` | Token budget chưa cạn, đã chèn nudge message |
+| `next_turn` | Continuation bình thường sau tool-use |
 
 ---
 
-## Orphaned Tool Results: The Protocol Safety Net
+## Orphaned Tool Results: lưới an toàn giao thức
 
-The API protocol requires that every `tool_use` block is followed by a `tool_result`. The function `yieldMissingToolResultBlocks` creates error `tool_result` messages for every `tool_use` block that the model emitted but that never got a corresponding result. Without this safety net, a crash during streaming would leave orphaned `tool_use` blocks that would cause a protocol error on the next API call.
+Giao thức API yêu cầu mọi khối `tool_use` phải được theo sau bởi một `tool_result`. Hàm `yieldMissingToolResultBlocks` tạo các message `tool_result` dạng lỗi cho mọi khối `tool_use` mà model đã phát ra nhưng không bao giờ có kết quả tương ứng. Nếu thiếu lưới an toàn này, một lần crash trong lúc streaming sẽ để lại các khối `tool_use` mồ côi, gây lỗi giao thức ở API call kế tiếp.
 
-It fires in three places: the outer error handler (model crash), the fallback handler (model switch mid-stream), and the abort handler (user interruption). Each path has a different error message, but the mechanism is identical.
+Nó kích hoạt ở ba nơi: outer error handler (model crash), fallback handler (chuyển model giữa stream), và abort handler (người dùng ngắt). Mỗi nhánh có message lỗi khác nhau, nhưng cơ chế giống hệt.
 
 ---
 
-## Abort Handling: Two Paths
+## Xử lý Abort: hai đường đi
 
-Aborts can happen at two points: during streaming and during tool execution. Each has distinct behavior.
+Abort có thể xảy ra ở hai điểm: trong lúc streaming và trong lúc tool execution. Mỗi điểm có hành vi riêng.
 
-**Abort during streaming**: The streaming executor (if active) drains remaining results, generating synthetic `tool_results` for queued tools. Without the executor, `yieldMissingToolResultBlocks` fills the gap. The `signal.reason` check distinguishes between a hard abort (Ctrl+C) and a submit-interrupt (user typed a new message) -- submit-interrupts skip the interruption message because the queued user message already provides context.
+**Abort trong lúc streaming**: Streaming executor (nếu đang hoạt động) xả mọi kết quả còn lại, tạo `tool_results` tổng hợp cho các tool đang xếp hàng. Nếu không có executor, `yieldMissingToolResultBlocks` lấp chỗ trống. Kiểm tra `signal.reason` phân biệt hard abort (Ctrl+C) và submit-interrupt (người dùng gõ một message mới) -- submit-interrupt bỏ qua interruption message vì message người dùng đã xếp hàng sẵn đã cung cấp đủ ngữ cảnh.
 
-**Abort during tool execution**: Similar logic, with a `toolUse: true` parameter on the interruption message signaling to the UI that tools were in progress.
+**Abort trong lúc tool execution**: Logic tương tự, với tham số `toolUse: true` trên interruption message để báo cho UI rằng tools đang chạy dang dở.
 
 ---
 
 ## The Thinking Rules
 
-Claude's thinking/redacted_thinking blocks have three inviolable rules:
+Các khối thinking/redacted_thinking của Claude có ba quy tắc bất khả xâm phạm:
 
-1. A message containing a thinking block must be part of a query whose `max_thinking_length > 0`
-2. A thinking block may not be the last block in a message
-3. Thinking blocks must be preserved for the duration of an assistant trajectory
+1. Một message chứa thinking block phải thuộc một query có `max_thinking_length > 0`
+2. Thinking block không được là block cuối cùng trong một message
+3. Thinking blocks phải được bảo toàn trong suốt assistant trajectory
 
-Violating any of these produces opaque API errors. The code handles them in several places: the fallback handler strips signature blocks (which are model-bound), the compaction pipeline preserves the protected tail, and the microcompact layer never touches thinking blocks.
+Vi phạm bất kỳ quy tắc nào cũng tạo ra lỗi API khó hiểu. Mã nguồn xử lý chúng ở nhiều nơi: fallback handler loại bỏ signature blocks (vì gắn theo model), pipeline compaction bảo toàn protected tail, và tầng microcompact không bao giờ đụng vào thinking blocks.
 
 ---
 
 ## Dependency Injection
 
-The `QueryDeps` type is intentionally narrow -- four dependencies, not forty:
+Kiểu `QueryDeps` được cố ý giữ hẹp -- bốn dependency, không phải bốn mươi:
 
-Four injected dependencies: the model caller, the compactor, the microcompactor, and a UUID generator. Tests pass `deps` into the loop params to inject fakes directly. Using `typeof fn` for the type definitions keeps the signatures in sync automatically. Alongside the mutable `State` and the injectable `QueryDeps`, an immutable `QueryConfig` is snapshotted once at `query()` entry -- feature flags, session state, and environment variables captured once and never re-read. The three-way separation (mutable state, immutable config, injectable deps) makes the loop testable and makes the eventual refactor to a pure `step(state, event, config)` reducer straightforward.
+Bốn dependency được tiêm: model caller, compactor, microcompactor, và UUID generator. Tests truyền `deps` vào loop params để tiêm fakes trực tiếp. Dùng `typeof fn` cho định nghĩa kiểu giúp chữ ký luôn đồng bộ tự động. Song song với `State` khả biến và `QueryDeps` có thể tiêm, một `QueryConfig` bất biến được snapshot một lần tại điểm vào `query()` -- feature flags, session state, và environment variables được chụp một lần và không đọc lại. Cách tách ba ngả (trạng thái khả biến, cấu hình bất biến, dependency có thể tiêm) khiến vòng lặp dễ test và giúp việc refactor sau này sang reducer thuần `step(state, event, config)` trở nên thẳng đường.
 
 ---
 
-## Apply This: Building Your Own Agent Loop
+## Apply This: xây Agent Loop của riêng bạn
 
-**Use a generator, not callbacks.** The backpressure is free. The return value semantics are free. The composability via `yield*` is free. Agent loops are strictly forward-moving -- you never need to rewind or fork.
+**Hãy dùng generator, đừng dùng callbacks.** Backpressure là miễn phí. Ngữ nghĩa giá trị trả về là miễn phí. Khả năng tổ hợp qua `yield*` là miễn phí. Agent loop chỉ đi tiến -- bạn không bao giờ cần rewind hay fork.
 
-**Make state transitions explicit.** Reconstruct the full state object at every `continue` site. The verbosity is the feature -- it prevents partial-update bugs and makes each transition self-documenting.
+**Làm transition trạng thái thật tường minh.** Hãy dựng lại toàn bộ đối tượng trạng thái ở mọi vị trí `continue`. Sự dài dòng chính là tính năng -- nó ngăn lỗi cập nhật cục bộ và làm mỗi transition tự mô tả chính nó.
 
-**Withhold recoverable errors.** If your consumers disconnect on errors, do not yield errors until you know recovery has failed. Push them to an internal buffer, attempt recovery, and surface only on exhaustion.
+**Giữ lại các lỗi có thể phục hồi.** Nếu consumer của bạn ngắt kết nối khi gặp lỗi, đừng yield lỗi cho đến khi biết chắc phục hồi đã thất bại. Đẩy chúng vào buffer nội bộ, thử phục hồi, và chỉ đưa ra khi đã cạn mọi đường.
 
-**Layer your context management.** Light operations first (removal), heavy operations last (summarization). This preserves granular context when possible and falls back to monolithic summaries only when necessary.
+**Xếp lớp quản lý context của bạn.** Thao tác nhẹ trước (loại bỏ), thao tác nặng sau (tóm tắt). Cách này giữ được context hạt mịn khi có thể, và chỉ rơi về tóm tắt nguyên khối khi thật sự cần.
 
-**Add circuit breakers for every retry.** Every recovery mechanism in `query.ts` has an explicit limit: 3 auto-compact failures, 3 max-output recovery attempts, 1 reactive compact attempt. Without these limits, the first production session that triggers a retry-on-failure loop will burn your API budget overnight.
+**Thêm circuit breaker cho mọi cơ chế retry.** Mọi cơ chế phục hồi trong `query.ts` đều có giới hạn tường minh: 3 lần auto-compact thất bại, 3 lần thử max-output recovery, 1 lần thử reactive compact. Không có các giới hạn này, session production đầu tiên kích hoạt vòng retry-on-failure sẽ đốt sạch API budget của bạn qua đêm.
 
-The minimal agent loop skeleton, if you are starting from scratch:
+Khung agent loop tối thiểu nếu bạn bắt đầu từ con số không:
 
 ```
 async function* agentLoop(params) {
@@ -492,14 +492,14 @@ async function* agentLoop(params) {
 }
 ```
 
-Every feature in Claude Code's loop is an elaboration of one of these steps. The four compression layers elaborate step 3 (compress). The withholding pattern elaborates the model call. The escalation ladder elaborates error recovery. Stop hooks elaborate the "no tool use" exit. Start with this skeleton. Add each elaboration only when you hit the problem it solves.
+Mọi tính năng trong vòng lặp của Claude Code đều là phần mở rộng của một trong các bước này. Bốn lớp nén context mở rộng bước 3 (compress). The Withholding Pattern mở rộng model call. The Escalation Ladder mở rộng phục hồi lỗi. Stop hooks mở rộng lối thoát "không có tool use". Hãy bắt đầu từ khung này. Chỉ thêm từng phần mở rộng khi bạn gặp đúng bài toán mà nó giải quyết.
 
 ---
 
-## Summary
+## Tóm tắt
 
-The agent loop is 1,730 lines of a single `while(true)` that does everything. It streams model responses, executes tools concurrently, compresses context through four layers, recovers from five categories of errors, tracks token budgets with diminishing returns detection, runs stop hooks that can force the model back to work, manages prefetch pipelines for memory and skills, and produces a typed discriminated union of exactly why it stopped.
+Agent loop là 1.730 dòng của một `while(true)` duy nhất làm mọi thứ. Nó stream phản hồi model, thực thi tools đồng thời, nén context qua bốn lớp, phục hồi từ năm nhóm lỗi, theo dõi token budgets với phát hiện diminishing returns, chạy stop hooks có thể ép model quay lại làm việc, quản lý pipeline prefetch cho memory và skills, và tạo ra một discriminated union có kiểu để chỉ rõ chính xác vì sao nó dừng.
 
-It is the most important file in the system because it is the only file that touches every other subsystem. The context pipeline feeds into it. The tool system feeds out of it. The error recovery wraps around it. The hooks intercept it. The state layer persists through it. The UI renders from it.
+Đây là file quan trọng nhất của hệ thống vì nó là file duy nhất chạm đến mọi subsystem khác. Context pipeline đi vào nó. Tool system đi ra từ nó. Error recovery bọc quanh nó. Hooks chặn nó. Tầng trạng thái đi xuyên qua nó. UI render từ nó.
 
-If you understand `query()`, you understand Claude Code. Everything else is a peripheral.
+Nếu bạn hiểu `query()`, bạn hiểu Claude Code. Mọi thứ khác chỉ là ngoại vi.

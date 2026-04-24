@@ -1,54 +1,54 @@
-# Chapter 8: Spawning Sub-Agents
+# Chương 8: Spawning Sub-Agents
 
-## The Multiplication of Intelligence
+## The Multiplication of Intelligence (Sự nhân bội trí tuệ)
 
-A single agent is powerful. It can read files, edit code, run tests, search the web, and reason about the results. But there is a hard ceiling on what one agent can do in a single conversation: the context window fills up, the task branches in directions that demand different capabilities, and the serial nature of tool execution becomes a bottleneck. The solution is not a bigger model. It is more agents.
+Một agent đơn lẻ rất mạnh. Nó có thể đọc file, sửa code, chạy test, tìm kiếm web, và suy luận từ kết quả. Nhưng có một trần cứng cho những gì một agent có thể làm trong một cuộc hội thoại: context window đầy lên, tác vụ rẽ nhánh theo các hướng đòi hỏi năng lực khác nhau, và bản chất tuần tự của tool execution trở thành nút thắt. Lời giải không phải model lớn hơn. Lời giải là nhiều agent hơn.
 
-Claude Code's sub-agent system lets the model request help. When the parent agent encounters a task that would benefit from delegation -- a codebase search that should not pollute the main conversation, a verification pass that demands adversarial thinking, a set of independent edits that could run in parallel -- it calls the `Agent` tool. That call spawns a child: a fully independent agent with its own conversation loop, its own tool set, its own permission boundary, and its own abort controller. The child does its work and returns a result. The parent never sees the child's internal reasoning, only the final output.
+Hệ thống sub-agent của Claude Code cho phép model yêu cầu trợ giúp. Khi parent agent gặp một tác vụ nên được ủy quyền -- một lượt tìm kiếm codebase không nên làm bẩn cuộc hội thoại chính, một lượt kiểm chứng đòi hỏi tư duy đối kháng, một tập chỉnh sửa độc lập có thể chạy song song -- nó gọi tool `Agent`. Lời gọi đó sinh ra một child: một agent độc lập hoàn toàn với conversation loop riêng, bộ tool riêng, permission boundary riêng, và abort controller riêng. Child làm việc rồi trả kết quả. Parent không thấy suy luận nội bộ của child, chỉ thấy output cuối cùng.
 
-This is not a convenience feature. It is the architectural foundation for everything from parallel file exploration to coordinator-worker hierarchies to multi-agent swarm teams. And it all flows through two files: `AgentTool.tsx`, which defines the model-facing interface, and `runAgent.ts`, which implements the lifecycle.
+Đây không phải tính năng tiện ích. Đây là nền tảng kiến trúc cho mọi thứ từ khám phá file song song đến mô hình coordinator-worker hierarchies rồi multi-agent swarm teams. Và toàn bộ chảy qua hai file: `AgentTool.tsx`, nơi định nghĩa interface đối diện model, và `runAgent.ts`, nơi triển khai lifecycle.
 
-The design challenge is significant. A sub-agent needs enough context to do its job but not so much that it wastes tokens on irrelevant information. It needs permission boundaries that are strict enough for safety but flexible enough for utility. It needs lifecycle management that cleans up every resource it touches without requiring the caller to remember what to clean up. And all of this must work for a spectrum of agent types -- from a cheap, fast, read-only Haiku searcher to an expensive, thorough, Opus-powered verification agent running adversarial tests in the background.
+Bài toán thiết kế ở đây đáng kể. Một sub-agent cần đủ ngữ cảnh để làm việc, nhưng không quá nhiều để lãng phí token vào thông tin không liên quan. Nó cần permission boundary đủ chặt để an toàn nhưng đủ linh hoạt để hữu ích. Nó cần lifecycle management dọn sạch mọi resource đã đụng vào mà không buộc caller phải nhớ dọn cái gì. Và tất cả phải chạy cho cả một phổ agent type -- từ một Haiku searcher rẻ, nhanh, read-only đến một verification agent dùng Opus đắt, kỹ, chạy adversarial test ở background.
 
-This chapter traces the path from the model's "I need help" to a fully operational child agent. We will examine the tool definition that the model sees, the fifteen-step lifecycle that creates the execution environment, the six built-in agent types and what each optimizes for, the frontmatter system that lets users define custom agents, and the design principles that emerge from all of it.
+Chương này đi theo đường từ câu "I need help" của model đến một child agent vận hành đầy đủ. Chúng ta sẽ xem định nghĩa tool mà model nhìn thấy, lifecycle 15 bước dựng môi trường thực thi, sáu built-in agent type và tối ưu của từng loại, hệ frontmatter cho phép user định nghĩa custom agent, và các nguyên lý thiết kế rút ra từ toàn bộ đó.
 
-A note on terminology: throughout this chapter, "parent" refers to the agent that calls the `Agent` tool, and "child" refers to the agent that is spawned. The parent is usually (but not always) the top-level REPL agent. In coordinator mode, the coordinator spawns workers, which are children. In nested scenarios, a child can itself spawn grandchildren -- the same lifecycle applies recursively.
+Ghi chú thuật ngữ: trong toàn chương này, "parent" chỉ agent gọi tool `Agent`, còn "child" chỉ agent được spawn. Parent thường (nhưng không phải luôn luôn) là top-level REPL agent. Trong coordinator mode, coordinator spawn worker, và các worker là child. Trong kịch bản lồng nhau, child có thể tiếp tục spawn grandchild -- cùng một lifecycle áp dụng đệ quy.
 
-The orchestration layer spans approximately 40 files across `tools/AgentTool/`, `tasks/`, `coordinator/`, `tools/SendMessageTool/`, and `utils/swarm/`. This chapter focuses on the spawning mechanics -- the AgentTool definition and the runAgent lifecycle. The next chapter covers the runtime: progress tracking, result retrieval, and multi-agent coordination patterns.
+Lớp orchestration trải rộng khoảng 40 file qua `tools/AgentTool/`, `tasks/`, `coordinator/`, `tools/SendMessageTool/`, và `utils/swarm/`. Chương này tập trung vào cơ chế spawning -- định nghĩa AgentTool và lifecycle runAgent. Chương sau bao phủ runtime: progress tracking, result retrieval, và các mẫu phối hợp multi-agent.
 
 ---
 
 ## The AgentTool Definition
 
-The `AgentTool` is registered under the name `"Agent"` with a legacy alias `"Task"` for backward compatibility with older transcripts, permission rules, and hook configurations. It is built with the standard `buildTool()` factory, but its schema is more dynamic than any other tool in the system.
+`AgentTool` được đăng ký dưới tên `"Agent"` với legacy alias `"Task"` để backward compatibility với transcript, permission rule, và hook configuration cũ. Nó được dựng bằng factory chuẩn `buildTool()`, nhưng schema của nó động hơn mọi tool khác trong hệ thống.
 
 ### The Input Schema
 
-The input schema is constructed lazily via `lazySchema()` -- a pattern we saw in Chapter 6 that defers zod compilation until first use. There are two layers: a base schema and a full schema that adds multi-agent and isolation parameters.
+Input schema được dựng lười bằng `lazySchema()` -- một pattern ta đã thấy ở Chương 6, hoãn biên dịch zod tới lần dùng đầu tiên. Có hai lớp: base schema và full schema thêm tham số multi-agent cùng isolation.
 
-The base fields are always present:
+Các field cơ sở luôn hiện diện:
 
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
-| `description` | `string` | Yes | Short 3-5 word summary of the task |
-| `prompt` | `string` | Yes | The full task description for the agent |
-| `subagent_type` | `string` | No | Which specialized agent to use |
-| `model` | `enum('sonnet','opus','haiku')` | No | Model override for this agent |
-| `run_in_background` | `boolean` | No | Launch asynchronously |
+| `description` | `string` | Yes | Tóm tắt ngắn 3-5 từ của tác vụ |
+| `prompt` | `string` | Yes | Mô tả tác vụ đầy đủ cho agent |
+| `subagent_type` | `string` | No | Chọn specialized agent để dùng |
+| `model` | `enum('sonnet','opus','haiku')` | No | Model override cho agent này |
+| `run_in_background` | `boolean` | No | Khởi chạy bất đồng bộ |
 
-The full schema adds multi-agent parameters (when swarm features are active) and isolation controls:
+Full schema thêm tham số multi-agent (khi swarm feature hoạt động) và control cho isolation:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `name` | `string` | Makes the agent addressable via `SendMessage({to: name})` |
-| `team_name` | `string` | Team context for spawning |
-| `mode` | `PermissionMode` | Permission mode for spawned teammate |
-| `isolation` | `enum('worktree','remote')` | Filesystem isolation strategy |
-| `cwd` | `string` | Absolute path override for working directory |
+| `name` | `string` | Giúp agent có thể được gọi qua `SendMessage({to: name})` |
+| `team_name` | `string` | Team context khi spawn |
+| `mode` | `PermissionMode` | Permission mode cho teammate được spawn |
+| `isolation` | `enum('worktree','remote')` | Chiến lược cô lập filesystem |
+| `cwd` | `string` | Override đường dẫn làm việc tuyệt đối |
 
-The multi-agent fields enable the swarm pattern covered in Chapter 9: named agents that can send messages to each other via `SendMessage({to: name})` while running concurrently. The isolation fields enable filesystem safety: worktree isolation creates a temporary git worktree so the agent operates on a copy of the repository, preventing conflicting edits when multiple agents work on the same codebase simultaneously.
+Các field multi-agent kích hoạt swarm pattern (mẫu bầy đàn) được nói ở Chương 9: named agent có thể nhắn nhau qua `SendMessage({to: name})` trong lúc chạy đồng thời. Các field isolation kích hoạt an toàn filesystem: worktree isolation tạo git worktree tạm thời để agent thao tác trên bản sao repository, ngăn chỉnh sửa xung đột khi nhiều agent cùng làm trên một codebase.
 
-What makes this schema unusual is that it is **dynamically shaped by feature flags**:
+Điều làm schema này khác thường là nó được **định hình động bởi feature flag**:
 
 ```typescript
 // Pseudocode — illustrates the feature-gated schema pattern
@@ -60,49 +60,49 @@ inputSchema = lazySchema(() => {
 })
 ```
 
-When the fork experiment is active, `run_in_background` disappears from the schema entirely because all spawns are forced async under that path. When background tasks are disabled (via `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), the field is also stripped. When the KAIROS feature flag is off, `cwd` is omitted. The model never sees fields it cannot use.
+Khi fork experiment bật, `run_in_background` biến mất hoàn toàn khỏi schema vì tất cả spawn trên nhánh đó bị ép async. Khi background task bị tắt (qua `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), field này cũng bị lược bỏ. Khi feature flag KAIROS tắt, `cwd` bị omit. Model không bao giờ thấy field mà nó không dùng được.
 
-This is a subtle but important design choice. The schema is not just validation -- it is the model's instruction manual. Every field in the schema is described in the tool definition that the model reads. Removing fields the model should not use is more effective than adding "do not use this field" to the prompt. The model cannot misuse what it cannot see.
+Đây là lựa chọn thiết kế tinh tế nhưng quan trọng. Schema không chỉ để validation -- nó là sổ tay hướng dẫn cho model. Mọi field trong schema đều được mô tả trong định nghĩa tool mà model đọc. Loại bỏ field model không nên dùng hiệu quả hơn thêm câu "đừng dùng field này" vào prompt. Model không thể lạm dụng thứ nó không nhìn thấy.
 
 ### The Output Schema
 
-The output is a discriminated union with two public variants:
+Output là một discriminated union với hai biến thể public:
 
-- `{ status: 'completed', prompt, ...AgentToolResult }` -- synchronous completion with the agent's final output
-- `{ status: 'async_launched', agentId, description, prompt, outputFile }` -- background launch acknowledgment
+- `{ status: 'completed', prompt, ...AgentToolResult }` -- hoàn thành đồng bộ với output cuối của agent
+- `{ status: 'async_launched', agentId, description, prompt, outputFile }` -- xác nhận đã launch ở background
 
-Two additional internal variants (`TeammateSpawnedOutput` and `RemoteLaunchedOutput`) exist but are excluded from the exported schema to enable dead code elimination in external builds. The bundler strips these variants and their associated code paths when the corresponding feature flags are disabled, keeping the distributed binary smaller.
+Hai biến thể nội bộ bổ sung (`TeammateSpawnedOutput` và `RemoteLaunchedOutput`) có tồn tại nhưng bị loại khỏi exported schema để hỗ trợ dead code elimination ở external build. Bundler sẽ strip các biến thể này và code path liên quan khi feature flag tương ứng tắt, giúp binary phân phối nhỏ hơn.
 
-The `async_launched` variant is notable for what it includes: the `outputFile` path where the agent's results will be written when it completes. This lets the parent (or any other consumer) poll or watch the file for results, providing a filesystem-based communication channel that survives process restarts.
+Biến thể `async_launched` đáng chú ý ở phần nó chứa: đường dẫn `outputFile` nơi kết quả agent sẽ được ghi khi hoàn tất. Việc này cho phép parent (hoặc consumer khác) poll hoặc watch file để nhận kết quả, tạo một filesystem-based communication channel sống sót qua process restart.
 
 ### The Dynamic Prompt
 
-The `AgentTool` prompt is generated by `getPrompt()` and is context-sensitive. It adapts based on available agents (listed inline or as an attachment to avoid busting prompt cache), whether fork is active (adds "When to fork" guidance), whether the session is in coordinator mode (slim prompt since the coordinator system prompt already covers usage), and subscription tier. Non-pro users get a note about launching multiple agents concurrently.
+Prompt của `AgentTool` được tạo bởi `getPrompt()` và có context-sensitive behavior. Nó thích nghi theo agent khả dụng (liệt kê inline hoặc dưới dạng attachment để tránh làm vỡ prompt cache), theo việc fork có bật không (thêm hướng dẫn "When to fork"), theo session có ở coordinator mode không (prompt gọn vì system prompt của coordinator đã bao phủ cách dùng), và theo subscription tier. Người dùng non-pro nhận ghi chú về việc launch nhiều agent đồng thời.
 
-The attachment-based agent list is worth highlighting. The codebase comments reference "approximately 10.2% of fleet cache_creation tokens" being caused by dynamic tool descriptions. Moving the agent list from the tool description to an attachment message keeps the tool description static, so connecting an MCP server or loading a plugin does not bust the prompt cache for every subsequent API call.
+Danh sách agent dạng attachment rất đáng nhấn mạnh. Comment trong codebase nhắc tới "approximately 10.2% of fleet cache_creation tokens" do mô tả tool động gây ra. Chuyển danh sách agent từ mô tả tool sang attachment message giữ mô tả tool tĩnh, để việc kết nối MCP server hoặc nạp plugin không làm vỡ prompt cache cho mọi API call tiếp theo.
 
-This is a pattern worth internalizing for any system that uses tool definitions with dynamic content. The Anthropic API caches the prompt prefix -- system prompt, tool definitions, and conversation history -- and reuses the cached computation for subsequent requests that share the same prefix. If the tool definition changes between API calls (because an agent was added or an MCP server connected), the entire cache is invalidated. Moving volatile content from the tool definition (which is part of the cached prefix) to an attachment message (which is appended after the cached portion) preserves the cache while still delivering the information to the model.
+Đây là pattern đáng ghi nhớ cho mọi hệ thống dùng định nghĩa tool có nội dung động. Anthropic API cache prompt prefix -- system prompt, tool definitions, và conversation history -- rồi tái sử dụng tính toán đã cache cho request sau có cùng prefix. Nếu định nghĩa tool đổi giữa các API call (vì thêm agent hoặc kết nối MCP server), toàn bộ cache bị invalid. Chuyển nội dung volatile từ định nghĩa tool (nằm trong cached prefix) sang attachment message (được nối sau phần đã cache) sẽ giữ được cache mà vẫn đưa thông tin cho model.
 
-With the tool definition understood, we can now trace what happens when the model actually calls it.
+Khi đã hiểu định nghĩa tool, ta có thể lần theo chuyện gì xảy ra khi model thật sự gọi nó.
 
 ### Feature Gating
 
-The sub-agent system has the most complex feature gating in the codebase. At least twelve feature flags and GrowthBook experiments control which agents are available, which parameters appear in the schema, and which code paths are taken:
+Hệ sub-agent có feature gating phức tạp nhất codebase. Tối thiểu mười hai feature flag và GrowthBook experiment điều khiển agent nào khả dụng, tham số nào hiện trong schema, và code path nào được đi:
 
 | Feature Gate | Controls |
 |-------------|----------|
-| `FORK_SUBAGENT` | Fork agent path |
-| `BUILTIN_EXPLORE_PLAN_AGENTS` | Explore and Plan agents |
-| `VERIFICATION_AGENT` | Verification agent |
-| `KAIROS` | `cwd` override, assistant force-async |
-| `TRANSCRIPT_CLASSIFIER` | Handoff classification, `auto` mode override |
-| `PROACTIVE` | Proactive module integration |
+| `FORK_SUBAGENT` | Nhánh fork agent |
+| `BUILTIN_EXPLORE_PLAN_AGENTS` | Agent Explore và Plan |
+| `VERIFICATION_AGENT` | Agent Verification |
+| `KAIROS` | Override `cwd`, assistant force-async |
+| `TRANSCRIPT_CLASSIFIER` | Handoff classification, override `auto` mode |
+| `PROACTIVE` | Tích hợp proactive module |
 
-Each gate uses `feature()` from Bun's dead code elimination system (compile-time) or `getFeatureValue_CACHED_MAY_BE_STALE()` from GrowthBook (runtime A/B testing). The compile-time gates are string-replaced during the build -- when `FORK_SUBAGENT` is `'ant'`, the entire fork code path is included; when it is `'external'`, it may be excluded entirely. The GrowthBook gates allow live experimentation: the `tengu_amber_stoat` experiment can A/B test whether removing Explore and Plan agents changes user behavior, without shipping a new binary.
+Mỗi gate dùng `feature()` từ hệ dead code elimination của Bun (compile-time) hoặc `getFeatureValue_CACHED_MAY_BE_STALE()` từ GrowthBook (runtime A/B testing). Compile-time gate được thay chuỗi khi build -- khi `FORK_SUBAGENT` là `'ant'`, toàn bộ fork code path được include; khi là `'external'`, có thể bị loại hoàn toàn. GrowthBook gate cho phép thử nghiệm trực tiếp: experiment `tengu_amber_stoat` có thể A/B test việc bỏ Explore và Plan có đổi hành vi người dùng không, mà không cần phát hành binary mới.
 
 ### The call() Decision Tree
 
-Before `runAgent()` is ever invoked, the `call()` method in `AgentTool.tsx` routes the request through a decision tree that determines *what kind* of agent to spawn and *how* to spawn it:
+Trước khi `runAgent()` được gọi, method `call()` trong `AgentTool.tsx` định tuyến request qua decision tree quyết định *spawn kiểu agent nào* và *spawn bằng cách nào*:
 
 ```
 1. Is this a teammate spawn? (team_name + name both set)
@@ -140,19 +140,19 @@ Before `runAgent()` is ever invoked, the `call()` method in `AgentTool.tsx` rout
 10. Execute (async -> registerAsyncAgent + void lifecycle; sync -> iterate runAgent)
 ```
 
-Steps 1 through 6 are pure routing -- no agent has been created yet. The actual lifecycle begins at `runAgent()`, which the sync path iterates directly and the async path wraps in `runAsyncAgentLifecycle()`.
+Bước 1 đến 6 là định tuyến thuần -- chưa agent nào được tạo. Lifecycle thực sự bắt đầu tại `runAgent()`, nơi nhánh sync lặp trực tiếp và nhánh async bọc trong `runAsyncAgentLifecycle()`.
 
-The routing is done in `call()` rather than `runAgent()` for a reason: `runAgent()` is a pure lifecycle function that does not know about teammates, remote agents, or the fork experiment. It receives a resolved agent definition and executes it. The decision of *which* definition to resolve, *how* to isolate the agent, and *whether* to run synchronously or asynchronously belongs to the layer above. This separation keeps `runAgent()` testable and reusable -- it is called from both the normal AgentTool path and from the async lifecycle wrapper when resuming a backgrounded agent.
+Định tuyến được làm ở `call()` thay vì `runAgent()` vì một lý do rõ ràng: `runAgent()` là lifecycle function thuần, không biết gì về teammate, remote agent, hay fork experiment. Nó nhận agent definition đã resolve rồi thực thi. Quyết định *resolve definition nào*, *cô lập agent ra sao*, và *chạy sync hay async* thuộc lớp phía trên. Sự tách lớp này giữ `runAgent()` dễ test, dễ tái dùng -- nó được gọi cả từ luồng AgentTool bình thường lẫn async lifecycle wrapper khi resume một backgrounded agent.
 
-The fork guard in step 3 deserves attention. Fork children keep the `Agent` tool in their pool (for cache-identical tool definitions with the parent), but recursive forking would be pathological. Two guards prevent it: `querySource === 'agent:builtin:fork'` (set on the child's context options, survives autocompact) and `isInForkChild(messages)` (scans conversation history for the `<fork-boilerplate>` tag as a fallback). Belt and suspenders -- the primary guard is fast and reliable; the fallback catches edge cases where querySource was not threaded.
+Fork guard ở bước 3 đáng để ý. Fork child giữ tool `Agent` trong pool (để tool definition cache-identical với parent), nhưng recursive forking sẽ rất bệnh lý. Hai guard ngăn điều đó: `querySource === 'agent:builtin:fork'` (set trên context options của child, sống qua autocompact) và `isInForkChild(messages)` (quét conversation history tìm tag `<fork-boilerplate>` làm fallback). Belt and suspenders (đeo đai và thêm dây an toàn) -- guard chính nhanh và tin cậy; fallback bắt các ca biên khi querySource không được luồn qua.
 
 ---
 
 ## The runAgent Lifecycle
 
-`runAgent()` in `runAgent.ts` is an async generator that drives a sub-agent's entire lifecycle. It yields `Message` objects as the agent works. Every sub-agent -- fork, built-in, custom, coordinator worker -- flows through this single function. The function is approximately 400 lines, and every line exists for a reason.
+`runAgent()` trong `runAgent.ts` là async generator điều khiển toàn bộ lifecycle của sub-agent. Nó yield `Message` object khi agent làm việc. Mọi sub-agent -- fork, built-in, custom, coordinator worker -- đều đi qua một hàm này. Hàm dài khoảng 400 dòng, và mỗi dòng đều có lý do tồn tại.
 
-The function signature reveals the complexity of the problem:
+Chữ ký hàm lộ ra độ phức tạp của bài toán:
 
 ```typescript
 export async function* runAgent({
@@ -177,11 +177,11 @@ export async function* runAgent({
 }: { ... }): AsyncGenerator<Message, void>
 ```
 
-Seventeen parameters. Each one represents a dimension of variation that the lifecycle must handle. This is not over-engineering -- it is the natural consequence of a single function serving fork agents, built-in agents, custom agents, sync agents, async agents, worktree-isolated agents, and coordinator workers. The alternative would be seven different lifecycle functions with duplicated logic, which is worse.
+Mười bảy tham số. Mỗi tham số đại diện cho một chiều biến thiên mà lifecycle phải xử lý. Đây không phải over-engineering -- đây là hệ quả tự nhiên của việc một hàm phục vụ fork agent, built-in agent, custom agent, sync agent, async agent, worktree-isolated agent, và coordinator worker. Phương án khác là bảy lifecycle function khác nhau với logic trùng lặp, và điều đó còn tệ hơn.
 
-The `override` object is particularly important -- it is the escape hatch for fork agents and resumed agents that need to inject pre-computed values (system prompt, abort controller, agent ID) into the lifecycle without re-deriving them.
+Object `override` đặc biệt quan trọng -- đó là escape hatch cho fork agent và resumed agent cần inject giá trị đã tính sẵn (system prompt, abort controller, agent ID) vào lifecycle mà không phải suy lại.
 
-Here are the fifteen steps.
+Đây là mười lăm bước.
 
 ### Step 1: Model Resolution
 
@@ -194,11 +194,11 @@ const resolvedAgentModel = getAgentModel(
 )
 ```
 
-The resolution chain is: **caller override > agent definition > parent model > default**. The `getAgentModel()` function handles special values like `'inherit'` (use whatever the parent uses) and GrowthBook-gated overrides for specific agent types. The Explore agent, for example, defaults to Haiku for external users -- the cheapest and fastest model, appropriate for a read-only search specialist that runs 34 million times per week.
+Resolution chain là: **caller override > agent definition > parent model > default**. Hàm `getAgentModel()` xử lý giá trị đặc biệt như `'inherit'` (dùng đúng model parent đang dùng) và các override có gate bởi GrowthBook cho agent type cụ thể. Ví dụ, Explore agent mặc định dùng Haiku cho external user -- model rẻ và nhanh nhất, hợp với một read-only search specialist chạy 34 triệu lần mỗi tuần.
 
-Why this order matters: the caller (the parent model) can override the agent definition's preference by passing a `model` parameter in the tool call. This lets the parent promote a normally-cheap agent to a more capable model for a particularly complex search, or demote an expensive agent when the task is simple. But the agent definition's model is the default, not the parent's -- a Haiku Explore agent should not accidentally inherit the parent's Opus model just because no one specified otherwise.
+Vì sao thứ tự này quan trọng: caller (tức parent model) có thể override model ưu tiên của agent definition bằng tham số `model` trong tool call. Việc này cho parent nâng một agent thường rẻ lên model mạnh hơn cho một lượt tìm kiếm khó, hoặc hạ một agent đắt khi tác vụ đơn giản. Nhưng model trong agent definition là mặc định, không phải model của parent -- một Explore agent chạy Haiku không nên vô tình kế thừa Opus của parent chỉ vì không ai chỉ định khác.
 
-Understanding the model resolution chain is important because it establishes a design principle that recurs throughout the lifecycle: **explicit overrides beat declarations, declarations beat inheritance, inheritance beats defaults.** This same principle governs permission modes, abort controllers, and system prompts. The consistency makes the system predictable -- once you understand one resolution chain, you understand them all.
+Hiểu model resolution chain quan trọng vì nó chốt một nguyên lý thiết kế lặp lại suốt lifecycle: **explicit overrides beat declarations, declarations beat inheritance, inheritance beats defaults.** Cùng nguyên lý này chi phối permission mode, abort controller, và system prompt. Tính nhất quán khiến hệ thống dễ dự đoán -- hiểu một chain thì hiểu luôn các chain còn lại.
 
 ### Step 2: Agent ID Creation
 
@@ -206,11 +206,11 @@ Understanding the model resolution chain is important because it establishes a d
 const agentId = override?.agentId ? override.agentId : createAgentId()
 ```
 
-Agent IDs follow the pattern `agent-<hex>` where the hex part is derived from `crypto.randomUUID()`. The branded type `AgentId` prevents accidental string confusion at the type level. The override path exists for resumed agents that need to keep their original ID for transcript continuity.
+Agent ID theo mẫu `agent-<hex>`, phần hex lấy từ `crypto.randomUUID()`. Branded type `AgentId` ngăn nhầm lẫn chuỗi ở tầng type. Nhánh override tồn tại cho resumed agent cần giữ ID cũ để continuity của transcript.
 
 ### Step 3: Context Preparation
 
-Fork agents and fresh agents diverge here:
+Fork agent và fresh agent tách nhau ở đây:
 
 ```typescript
 const contextMessages: Message[] = forkContextMessages
@@ -223,13 +223,13 @@ const agentReadFileState = forkContextMessages !== undefined
   : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
 ```
 
-For fork agents, the parent's entire conversation history is cloned into `contextMessages`. But there is a critical filter: `filterIncompleteToolCalls()` strips any `tool_use` blocks that lack matching `tool_result` blocks. Without this filter, the API would reject the malformed conversation. This happens when the parent is mid-tool-execution at the moment of forking -- the tool_use has been emitted but the result has not arrived yet.
+Với fork agent, toàn bộ conversation history của parent được clone vào `contextMessages`. Nhưng có một filter tối quan trọng: `filterIncompleteToolCalls()` loại mọi block `tool_use` chưa có block `tool_result` khớp. Không có filter này, API sẽ từ chối cuộc hội thoại lỗi cấu trúc. Tình huống đó xảy ra khi parent đang giữa lúc chạy tool tại thời điểm fork -- `tool_use` đã phát ra nhưng kết quả chưa về.
 
-The file state cache follows the same fork-or-fresh pattern. Fork children get a clone of the parent's cache (they already "know" which files have been read). Fresh agents start empty. The clone is a shallow copy -- file content strings are shared via reference, not duplicated. This matters for memory: a fork child with a 50-file cache does not duplicate 50 file contents, it duplicates 50 pointers. The LRU eviction behavior is independent -- each cache evicts based on its own access pattern.
+File state cache đi theo đúng mẫu fork-or-fresh. Fork child nhận bản clone cache của parent (chúng đã "biết" file nào đã đọc). Fresh agent bắt đầu rỗng. Bản clone là shallow copy -- chuỗi nội dung file được chia sẻ theo reference, không nhân đôi. Điều này quan trọng với memory: một fork child với cache 50 file không nhân đôi 50 nội dung file, nó nhân đôi 50 con trỏ. Hành vi LRU eviction vẫn độc lập -- mỗi cache tự evict theo access pattern của chính nó.
 
 ### Step 4: CLAUDE.md Stripping
 
-Read-only agents like Explore and Plan have `omitClaudeMd: true` in their definitions:
+Read-only agent như Explore và Plan có `omitClaudeMd: true` trong definition:
 
 ```typescript
 const shouldOmitClaudeMd =
@@ -242,15 +242,15 @@ const resolvedUserContext = shouldOmitClaudeMd
   : baseUserContext
 ```
 
-CLAUDE.md files contain project-specific instructions about commit messages, PR conventions, lint rules, and coding standards. A read-only search agent does not need any of this -- it cannot commit, cannot create PRs, cannot edit files. The parent agent has full context and will interpret the search results. Dropping CLAUDE.md here saves billions of tokens per week across the fleet -- an aggregate cost reduction that justifies the added complexity of conditional context injection.
+File CLAUDE.md chứa chỉ dẫn theo dự án về commit message, quy ước PR, rule lint, và coding standards. Một read-only search agent không cần các thứ này -- nó không thể commit, không thể tạo PR, không thể sửa file. Parent agent có đủ ngữ cảnh và sẽ diễn giải kết quả tìm kiếm. Bỏ CLAUDE.md ở đây tiết kiệm hàng tỷ token mỗi tuần trên toàn fleet -- mức giảm chi phí tổng hợp đủ lớn để biện minh độ phức tạp tăng thêm của việc inject ngữ cảnh có điều kiện.
 
-Similarly, Explore and Plan agents have `gitStatus` stripped from system context. The git status snapshot taken at session start can be up to 40KB and is explicitly labeled as stale. If these agents need git information, they can run `git status` themselves and get fresh data.
+Tương tự, Explore và Plan bị strip `gitStatus` khỏi system context. Snapshot git status chụp lúc bắt đầu session có thể tới 40KB và được ghi rõ là stale. Nếu các agent này cần thông tin git, chúng có thể tự chạy `git status` để lấy dữ liệu mới.
 
-These are not premature optimizations. At 34 million Explore spawns per week, every unnecessary token compounds into measurable cost. The kill-switch (`tengu_slim_subagent_claudemd`) defaults to true but can be flipped via GrowthBook if the stripping causes regressions.
+Đây không phải tối ưu sớm. Với 34 triệu lượt spawn Explore mỗi tuần, mọi token thừa đều cộng dồn thành chi phí đo được. Kill-switch (`tengu_slim_subagent_claudemd`) mặc định true nhưng có thể lật qua GrowthBook nếu strip gây hồi quy.
 
 ### Step 5: Permission Isolation
 
-This is the most intricate step. Each agent gets a custom `getAppState()` wrapper that overlays its permission configuration onto the parent's state:
+Đây là bước tinh vi nhất. Mỗi agent nhận wrapper `getAppState()` tùy biến để overlay cấu hình permission của nó lên state của parent:
 
 ```typescript
 const agentGetAppState = () => {
@@ -294,15 +294,15 @@ const agentGetAppState = () => {
 }
 ```
 
-There are four distinct concerns layered together:
+Có bốn mối quan tâm riêng được xếp chồng:
 
-**Permission mode cascade.** If the parent is in `bypassPermissions`, `acceptEdits`, or `auto` mode, the parent's mode always wins -- the agent definition cannot weaken it. Otherwise, the agent definition's `permissionMode` is applied. This prevents a custom agent from downgrading security when the user has explicitly set a permissive mode for the session.
+**Permission mode cascade.** Nếu parent đang ở `bypassPermissions`, `acceptEdits`, hoặc `auto`, mode của parent luôn thắng -- agent definition không được làm yếu nó. Nếu không, `permissionMode` từ agent definition được áp dụng. Điều này ngăn custom agent hạ cấp security khi user đã chủ động chọn mode nới lỏng cho session.
 
-**Prompt avoidance.** Background agents cannot show permission dialogs -- there is no terminal attached. So `shouldAvoidPermissionPrompts` is set to `true`, which causes the permission system to auto-deny rather than block. The exception is `bubble` mode: these agents surface prompts to the parent's terminal, so they can always show prompts regardless of sync/async status.
+**Prompt avoidance.** Background agent không thể hiện permission dialog -- không có terminal gắn vào. Nên `shouldAvoidPermissionPrompts` được set `true`, khiến hệ permission auto-deny thay vì block. Ngoại lệ là `bubble` mode: các agent này đẩy prompt lên terminal của parent, nên luôn có thể hiện prompt bất kể sync/async.
 
-**Automated check ordering.** Background agents that *can* show prompts (bubble mode) set `awaitAutomatedChecksBeforeDialog`. This means the classifier and permission hooks run first; the user is only interrupted if automated resolution fails. For background work, waiting an extra second for the classifier is fine -- the user should not be interrupted unnecessarily.
+**Automated check ordering.** Background agent *có thể* hiện prompt (bubble mode) sẽ set `awaitAutomatedChecksBeforeDialog`. Nghĩa là classifier và permission hook chạy trước; user chỉ bị ngắt nếu tự động hóa không giải quyết được. Với background work, chờ thêm một giây cho classifier là hợp lý -- không nên làm phiền user vô ích.
 
-**Tool permission scoping.** When `allowedTools` is provided, it replaces the session-level allow rules entirely. This prevents parent approvals from leaking through to scoped agents. But SDK-level permissions (from `--allowedTools` CLI flag) are preserved -- those represent the embedding application's explicit security policy and should apply everywhere.
+**Tool permission scoping.** Khi có `allowedTools`, nó thay thế toàn bộ session-level allow rule. Việc này ngăn approval của parent rò vào scoped agent. Nhưng SDK-level permission (từ cờ CLI `--allowedTools`) vẫn được giữ -- đó là security policy tường minh của ứng dụng nhúng, và phải áp dụng mọi nơi.
 
 ### Step 6: Tool Resolution
 
@@ -312,15 +312,15 @@ const resolvedTools = useExactTools
   : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 ```
 
-Fork agents use `useExactTools: true`, which passes the parent's tool array through unchanged. This is not just convenience -- it is a cache optimization. Different tool definitions serialize differently (different permission modes produce different tool metadata), and any divergence in the tool block busts the prompt cache. Fork children need byte-identical prefixes.
+Fork agent dùng `useExactTools: true`, truyền nguyên mảng tool của parent. Đây không chỉ là tiện lợi -- nó là tối ưu cache. Các định nghĩa tool khác nhau serialize khác nhau (permission mode khác nhau sinh metadata tool khác nhau), và bất kỳ lệch nào trong khối tool đều làm vỡ prompt cache. Fork child cần prefix byte-identical.
 
-For normal agents, `resolveAgentTools()` applies a layered filter:
-- `tools: ['*']` means all tools; `tools: ['Read', 'Bash']` means only those
-- `disallowedTools: ['Agent', 'FileEdit']` removes those from the pool
-- Built-in agents and custom agents have different base disallowed tool sets
-- Async agents get filtered through `ASYNC_AGENT_ALLOWED_TOOLS`
+Với agent thường, `resolveAgentTools()` áp bộ lọc nhiều lớp:
+- `tools: ['*']` nghĩa là tất cả tool; `tools: ['Read', 'Bash']` nghĩa là chỉ những tool đó
+- `disallowedTools: ['Agent', 'FileEdit']` sẽ gỡ chúng khỏi pool
+- Built-in agent và custom agent có tập default disallowed khác nhau
+- Async agent được lọc tiếp qua `ASYNC_AGENT_ALLOWED_TOOLS`
 
-The result is that each agent type sees exactly the tools it should have. The Explore agent cannot call FileEdit. The Verification agent cannot call Agent (no recursive spawning from a verifier). Custom agents have a more restrictive default deny list than built-ins.
+Kết quả là mỗi agent type thấy đúng tool nó nên có. Explore agent không gọi được FileEdit. Verification agent không gọi được Agent (không spawn đệ quy từ verifier). Custom agent có default deny list chặt hơn built-in.
 
 ### Step 7: System Prompt
 
@@ -335,9 +335,9 @@ const agentSystemPrompt = override?.systemPrompt
     )
 ```
 
-Fork agents receive the parent's pre-rendered system prompt via `override.systemPrompt`. This is threaded from `toolUseContext.renderedSystemPrompt` -- the exact bytes the parent used in its last API call. Recomputing the system prompt via `getSystemPrompt()` could diverge. GrowthBook features might have transitioned from cold to warm between the parent's call and the child's. A single byte difference in the system prompt busts the entire prompt cache prefix.
+Fork agent nhận pre-rendered system prompt của parent qua `override.systemPrompt`. Giá trị này được luồn từ `toolUseContext.renderedSystemPrompt` -- đúng từng byte mà parent đã dùng trong API call gần nhất. Tính lại system prompt qua `getSystemPrompt()` có thể lệch. Feature của GrowthBook có thể đã đổi từ cold sang warm giữa call của parent và child. Chỉ lệch một byte trong system prompt cũng làm vỡ toàn bộ prompt cache prefix.
 
-For normal agents, `getAgentSystemPrompt()` calls the agent definition's `getSystemPrompt()` function, then enhances with environment details -- absolute paths, emoji guidance (Claude tends to over-use emojis in certain contexts), and model-specific instructions.
+Với agent thường, `getAgentSystemPrompt()` gọi `getSystemPrompt()` của agent definition, rồi tăng cường bằng chi tiết môi trường -- absolute path, hướng dẫn emoji (Claude thường lạm dụng emoji trong vài ngữ cảnh), và chỉ dẫn riêng theo model.
 
 ### Step 8: Abort Controller Isolation
 
@@ -349,13 +349,13 @@ const agentAbortController = override?.abortController
     : toolUseContext.abortController
 ```
 
-Three lines, three behaviors:
+Ba dòng, ba hành vi:
 
-- **Override**: Used when resuming a backgrounded agent or for special lifecycle management. Takes precedence.
-- **Async agents get a new, unlinked controller.** When the user presses Escape, the parent's abort controller fires. Async agents should survive this -- they are background work that the user chose to delegate. Their independent controller means they keep running.
-- **Sync agents share the parent's controller.** Escape kills both. The child is blocking the parent; if the user wants to stop, they want to stop everything.
+- **Override**: Dùng khi resume backgrounded agent hoặc cho quản trị lifecycle đặc biệt. Luôn ưu tiên.
+- **Async agent nhận controller mới, không liên kết.** Khi user nhấn Escape, abort controller của parent nổ. Async agent phải sống qua việc này -- đó là background work user đã chọn ủy quyền. Controller độc lập giúp nó tiếp tục chạy.
+- **Sync agent dùng chung controller với parent.** Escape giết cả hai. Child đang chặn parent; nếu user muốn dừng, họ muốn dừng tất cả.
 
-This is one of those decisions that seems obvious in retrospect but would be catastrophic if wrong. An async agent that aborts when the parent aborts would lose all its work every time the user pressed Escape to ask a follow-up question. A sync agent that ignored the parent's abort would leave the user staring at a frozen terminal.
+Đây là kiểu quyết định nhìn lại thì hiển nhiên nhưng sai thì thảm họa. Async agent mà bị abort theo parent sẽ mất toàn bộ công việc mỗi lần user nhấn Escape để hỏi tiếp. Sync agent mà bỏ qua abort của parent sẽ khiến user nhìn terminal đứng hình.
 
 ### Step 9: Hook Registration
 
@@ -368,11 +368,11 @@ if (agentDefinition.hooks && hooksAllowedForThisAgent) {
 }
 ```
 
-Agent definitions can declare their own hooks (PreToolUse, PostToolUse, etc.) in frontmatter. These hooks are scoped to the agent's lifecycle via the `agentId` -- they only fire for this agent's tool calls, and they are automatically cleaned up in the `finally` block when the agent terminates.
+Agent definition có thể khai báo hook riêng (PreToolUse, PostToolUse, v.v.) trong frontmatter. Các hook này được scope vào lifecycle của agent qua `agentId` -- chỉ bắn cho tool call của agent này, và tự động được dọn trong khối `finally` khi agent kết thúc.
 
-The `isAgent: true` flag (the final `true` parameter) converts `Stop` hooks to `SubagentStop` hooks. Sub-agents trigger `SubagentStop`, not `Stop`, so the conversion ensures the hooks fire at the right event.
+Cờ `isAgent: true` (tham số `true` cuối cùng) chuyển `Stop` hook thành `SubagentStop` hook. Sub-agent kích hoạt `SubagentStop`, không phải `Stop`, nên phép chuyển đổi này đảm bảo hook bắn đúng event.
 
-Security matters here. When `strictPluginOnlyCustomization` is active for hooks, only plugin, built-in, and policy-settings agent hooks are registered. User-controlled agents (from `.claude/agents/`) have their hooks silently skipped. This prevents a malicious or misconfigured agent definition from injecting hooks that bypass security controls.
+Security rất quan trọng ở đây. Khi `strictPluginOnlyCustomization` bật cho hook, chỉ hook của plugin, built-in, và policy-settings agent mới được đăng ký. User-controlled agent (từ `.claude/agents/`) có hook sẽ bị bỏ qua im lặng. Điều này ngăn agent definition độc hại hoặc cấu hình sai chèn hook để vượt security control.
 
 ### Step 10: Skill Preloading
 
@@ -384,9 +384,9 @@ if (skillsToPreload.length > 0) {
 }
 ```
 
-Agent definitions can specify `skills: ["my-skill"]` in their frontmatter. The resolution tries three strategies: exact match, prefix with the agent's plugin name (e.g., `"my-skill"` becomes `"plugin:my-skill"`), and suffix match on `":skillName"` for plugin-namespaced skills. The three-strategy resolution ensures that skill references work regardless of whether the agent author used the fully-qualified name, the short name, or the plugin-relative name.
+Agent definition có thể chỉ định `skills: ["my-skill"]` trong frontmatter. Resolution thử ba chiến lược: exact match, thêm prefix tên plugin của agent (ví dụ `"my-skill"` thành `"plugin:my-skill"`), và suffix match theo `":skillName"` cho skill namespaced theo plugin. Cơ chế ba bước này giúp tham chiếu skill chạy được dù tác giả agent dùng tên đầy đủ, tên ngắn, hay tên tương đối theo plugin.
 
-Loaded skills become user messages prepended to the agent's conversation. This means the agent "reads" its skill instructions before seeing the task prompt -- the same mechanism used for slash commands in the main REPL, repurposed for automated skill injection. The skill content is loaded concurrently via `Promise.all()` to minimize startup latency when multiple skills are specified.
+Skill đã nạp trở thành user message được chèn lên đầu conversation của agent. Nghĩa là agent "đọc" hướng dẫn skill trước khi thấy task prompt -- cùng cơ chế dùng cho slash command ở REPL chính, nay tái dụng cho skill injection tự động. Nội dung skill được tải đồng thời bằng `Promise.all()` để giảm startup latency khi chỉ định nhiều skill.
 
 ### Step 11: MCP Initialization
 
@@ -395,14 +395,14 @@ const { clients: mergedMcpClients, tools: agentMcpTools, cleanup: mcpCleanup } =
   await initializeAgentMcpServers(agentDefinition, toolUseContext.options.mcpClients)
 ```
 
-Agents can define their own MCP servers in frontmatter, additive to the parent's clients. Two forms are supported:
+Agent có thể định nghĩa MCP server riêng trong frontmatter, cộng dồn với client của parent. Hỗ trợ hai dạng:
 
-- **Reference by name**: `"slack"` looks up an existing MCP config and gets a shared, memoized client
-- **Inline definition**: `{ "my-server": { command: "...", args: [...] } }` creates a new client that is cleaned up when the agent finishes
+- **Tham chiếu theo tên**: `"slack"` tra config MCP có sẵn và lấy shared, memoized client
+- **Định nghĩa inline**: `{ "my-server": { command: "...", args: [...] } }` tạo client mới, được dọn khi agent xong
 
-Only newly created (inline) clients are cleaned up. Shared clients are memoized at the parent level and persist beyond the agent's lifetime. This distinction prevents an agent from accidentally tearing down an MCP connection that other agents or the parent are still using.
+Chỉ client mới tạo (inline) mới bị cleanup. Shared client được memoize ở mức parent và tồn tại lâu hơn vòng đời agent. Sự phân biệt này ngăn agent vô tình tắt một MCP connection mà agent khác hoặc parent còn đang dùng.
 
-The MCP initialization happens *after* hook registration and skill preloading but *before* context creation. This ordering matters: the MCP tools must be merged into the tool pool before `createSubagentContext()` snapshots the tools into the agent's options. Reordering these steps would mean the agent either has no MCP tools or has them but they are not in its tool pool.
+Khởi tạo MCP diễn ra *sau* hook registration và skill preloading nhưng *trước* context creation. Thứ tự này quan trọng: MCP tool phải được merge vào tool pool trước khi `createSubagentContext()` chụp snapshot tool vào options của agent. Đảo thứ tự sẽ khiến agent hoặc không có MCP tool, hoặc có nhưng không nằm trong tool pool của nó.
 
 ### Step 12: Context Creation
 
@@ -423,26 +423,26 @@ const agentToolUseContext = createSubagentContext(toolUseContext, {
 })
 ```
 
-`createSubagentContext()` in `utils/forkedAgent.ts` assembles the new `ToolUseContext`. The key isolation decisions:
+`createSubagentContext()` trong `utils/forkedAgent.ts` lắp ghép `ToolUseContext` mới. Các quyết định cô lập chính:
 
-- **Sync agents share `setAppState`** with the parent. State changes (like permission approvals) are immediately visible to both. The user sees one coherent state.
-- **Async agents get isolated `setAppState`**. The parent's copy is a no-op for the child's writes. But `setAppStateForTasks` reaches the root store -- the child can still update task state (progress, completion) that the UI observes.
-- **Both share `setResponseLength`** for response metrics tracking.
-- **Fork agents inherit `thinkingConfig`** for cache-identical API requests. Normal agents get `{ type: 'disabled' }` -- thinking (extended reasoning tokens) is disabled to control output costs. The parent pays for thinking; the children execute.
+- **Sync agent chia sẻ `setAppState`** với parent. Thay đổi state (như phê duyệt permission) hiện ngay cho cả hai. User thấy một state thống nhất.
+- **Async agent có `setAppState` tách biệt**. Bản ở parent là no-op cho các lần child ghi. Nhưng `setAppStateForTasks` đi tới root store -- child vẫn cập nhật task state (tiến độ, hoàn tất) mà UI quan sát.
+- **Cả hai chia sẻ `setResponseLength`** để theo dõi metric độ dài phản hồi.
+- **Fork agent kế thừa `thinkingConfig`** để API request cache-identical. Agent thường nhận `{ type: 'disabled' }` -- thinking (token suy luận mở rộng) bị tắt để kiểm soát chi phí output. Parent trả tiền cho thinking; child thực thi.
 
-The `createSubagentContext()` function is worth examining for what it *isolates* versus what it *shares*. The isolation boundary is not all-or-nothing -- it is a carefully chosen set of shared and isolated channels:
+`createSubagentContext()` đáng xem vì nó *cô lập* gì và *chia sẻ* gì. Ranh giới isolation không phải tất-cả-hoặc-không -- nó là tập kênh được chọn lọc cẩn thận:
 
 | Concern | Sync Agent | Async Agent |
 |---------|-----------|-------------|
-| `setAppState` | Shared (parent sees changes) | Isolated (parent's copy is no-op) |
-| `setAppStateForTasks` | Shared | Shared (task state must reach root) |
-| `setResponseLength` | Shared | Shared (metrics need global view) |
-| `readFileState` | Own cache | Own cache |
-| `abortController` | Parent's | Independent |
+| `setAppState` | Shared (parent thấy thay đổi) | Isolated (bản parent là no-op) |
+| `setAppStateForTasks` | Shared | Shared (task state phải chạm root) |
+| `setResponseLength` | Shared | Shared (metric cần góc nhìn toàn cục) |
+| `readFileState` | Cache riêng | Cache riêng |
+| `abortController` | Của parent | Độc lập |
 | `thinkingConfig` | Fork: inherited / Normal: disabled | Fork: inherited / Normal: disabled |
-| `messages` | Own array | Own array |
+| `messages` | Mảng riêng | Mảng riêng |
 
-The asymmetry between `setAppState` (isolated for async) and `setAppStateForTasks` (always shared) is a key design decision. An async agent cannot push state changes to the parent's reactive store -- that would cause the parent's UI to jump unexpectedly. But the agent must still be able to update the global task registry, because that is how the parent knows the background agent has completed. The split channel solves both requirements.
+Bất đối xứng giữa `setAppState` (tách cho async) và `setAppStateForTasks` (luôn shared) là quyết định then chốt. Async agent không thể đẩy state vào reactive store của parent -- UI của parent sẽ nhảy bất ngờ. Nhưng agent vẫn phải cập nhật global task registry, vì đó là cách parent biết background agent đã hoàn thành. Kênh tách đôi giải cả hai yêu cầu.
 
 ### Step 13: Cache-Safe Params Callback
 
@@ -458,7 +458,7 @@ if (onCacheSafeParams) {
 }
 ```
 
-This callback is consumed by background summarization. When an async agent is running, the summarization service can fork the agent's conversation -- using these exact params to construct a cache-identical prefix -- and generate periodic progress summaries without disturbing the main conversation. The params are "cache-safe" because they produce the same API request prefix the agent is using, maximizing cache hits.
+Callback này được background summarization dùng. Khi async agent đang chạy, dịch vụ tóm tắt có thể fork conversation của agent -- dùng đúng bộ tham số này để dựng cache-identical prefix -- và sinh tóm tắt tiến độ định kỳ mà không làm nhiễu cuộc hội thoại chính. Các tham số này được gọi là "cache-safe" vì chúng tạo ra đúng request prefix mà agent đang dùng, tối đa cache hit.
 
 ### Step 14: The Query Loop
 
@@ -482,13 +482,13 @@ try {
 }
 ```
 
-The same `query()` function from Chapter 3 drives the sub-agent's conversation. The sub-agent's messages are yielded back to the caller -- either `AgentTool.call()` for sync agents (which iterates the generator inline) or `runAsyncAgentLifecycle()` for async agents (which consumes the generator in a detached async context).
+Cùng hàm `query()` từ Chương 3 vận hành cuộc hội thoại của sub-agent. Message của sub-agent được yield lại cho caller -- hoặc `AgentTool.call()` với sync agent (lặp generator inline), hoặc `runAsyncAgentLifecycle()` với async agent (tiêu thụ generator trong ngữ cảnh async tách rời).
 
-Each yielded message is recorded to a sidechain transcript via `recordSidechainTranscript()` -- an append-only JSONL file per agent. This enables resume: if the session is interrupted, the agent can be reconstructed from its transcript. The recording is `O(1)` per message, appending only the new message with a reference to the previous UUID for chain continuity.
+Mỗi message yield ra được ghi vào sidechain transcript qua `recordSidechainTranscript()` -- một file JSONL append-only cho từng agent. Việc này bật khả năng resume: nếu session gián đoạn, agent có thể được dựng lại từ transcript. Ghi là `O(1)` mỗi message, chỉ append message mới cùng tham chiếu UUID trước đó để giữ continuity của chain.
 
 ### Step 15: Cleanup
 
-The `finally` block runs on normal completion, abort, or error. It is the most comprehensive cleanup sequence in the codebase:
+Khối `finally` chạy khi hoàn tất bình thường, abort, hoặc lỗi. Đây là chuỗi cleanup toàn diện nhất trong codebase:
 
 ```typescript
 finally {
@@ -507,15 +507,15 @@ finally {
 }
 ```
 
-Every subsystem the agent touched during its lifetime gets cleaned up. MCP connections, hooks, cache tracking, file state, perfetto tracing, todo entries, and orphaned shell processes. The comment about "whale sessions" spawning hundreds of agents is telling -- without this cleanup, each agent would leave small leaks that accumulate into measurable memory pressure over long sessions.
+Mọi subsystem mà agent chạm tới trong vòng đời đều được dọn. MCP connection, hook, cache tracking, file state, perfetto tracing, todo entry, và bash process mồ côi. Comment về "whale sessions" spawn hàng trăm agent rất đáng chú ý -- không cleanup này thì mỗi agent để lại rò rỉ nhỏ, dồn lại thành áp lực bộ nhớ đo được ở session dài.
 
-The `initialMessages.length = 0` line is a manual GC hint. For fork agents, `initialMessages` contains the parent's entire conversation history. Setting the length to zero releases those references so the garbage collector can reclaim the memory. In a session with a 200K-token context that spawns five fork children, that is a megabyte of duplicated message objects per child.
+Dòng `initialMessages.length = 0` là manual GC hint. Với fork agent, `initialMessages` chứa toàn bộ conversation history của parent. Set length về zero giải phóng tham chiếu để garbage collector thu hồi bộ nhớ. Trong session có context 200K token mà spawn năm fork child, đó là hàng MB object message trùng lặp trên mỗi child.
 
-There is a lesson here about resource management in long-running agent systems. Each of the cleanup steps addresses a different kind of leak: MCP connections (file descriptors), hooks (memory in the app state store), file state caches (in-memory file content), Perfetto registrations (tracing metadata), todo entries (reactive state keys), and shell processes (OS-level processes). An agent interacts with many subsystems during its lifetime, and each subsystem must be notified when the agent is done. The `finally` block is the single place where all these notifications happen, and the generator protocol guarantees it runs. This is why the generator-based architecture is not just a convenience -- it is a correctness requirement.
+Bài học ở đây về quản trị resource trong hệ agent chạy dài hạn. Mỗi bước cleanup xử lý một kiểu leak khác: MCP connection (file descriptor), hook (memory trong app state store), file state cache (nội dung file trong RAM), Perfetto registration (tracing metadata), todo entry (key trong reactive state), và shell process (process cấp OS). Một agent tương tác nhiều subsystem trong vòng đời, và mỗi subsystem phải được báo khi agent xong. Khối `finally` là nơi duy nhất mọi thông báo dọn dẹp diễn ra, và generator protocol đảm bảo nó chạy. Đây là lý do kiến trúc generator-based không chỉ là tiện lợi -- nó là yêu cầu đúng đắn.
 
 ### The Generator Chain
 
-Before examining the built-in agent types, it is worth stepping back to see the structural pattern that makes all of this work. The entire sub-agent system is built on async generators. The chain flows:
+Trước khi nhìn các built-in agent type, đáng lùi lại để thấy mẫu cấu trúc khiến toàn bộ này hoạt động. Cả hệ sub-agent được xây trên async generator. Chuỗi luồng:
 
 ```mermaid
 graph TD
@@ -545,77 +545,77 @@ graph TD
     end
 ```
 
-This generator-based architecture enables four critical capabilities:
+Kiến trúc generator-based này mở bốn năng lực then chốt:
 
-**Streaming.** Messages flow through the system incrementally. The parent (or the async lifecycle wrapper) can observe each message as it is produced -- updating progress indicators, forwarding metrics, recording transcripts -- without buffering the entire conversation.
+**Streaming.** Message chảy tăng dần qua hệ thống. Parent (hoặc async lifecycle wrapper) có thể quan sát từng message khi nó xuất hiện -- cập nhật progress indicator, chuyển tiếp metric, ghi transcript -- mà không cần buffer toàn bộ cuộc hội thoại.
 
-**Cancellation.** Returning the async iterator triggers the `finally` block in `runAgent()`. The fifteen-step cleanup runs regardless of whether the agent completed normally, was aborted by the user, or threw an error. JavaScript's async generator protocol guarantees this.
+**Cancellation.** Trả về async iterator sẽ kích hoạt khối `finally` trong `runAgent()`. Toàn bộ cleanup 15 bước chạy bất kể agent hoàn tất bình thường, bị user abort, hay ném lỗi. Async generator protocol của JavaScript đảm bảo điều này.
 
-**Backgrounding.** A sync agent that is taking too long can be backgrounded mid-execution. The iterator is handed off from the foreground (where `AgentTool.call()` is iterating it) to an async context (where `runAsyncAgentLifecycle()` takes over). The agent does not restart -- it continues from where it was.
+**Backgrounding.** Một sync agent chạy quá lâu có thể bị đẩy nền giữa chừng. Iterator được bàn giao từ foreground (nơi `AgentTool.call()` đang lặp nó) sang ngữ cảnh async (nơi `runAsyncAgentLifecycle()` tiếp quản). Agent không khởi động lại -- nó tiếp tục từ đúng điểm đang dở.
 
-**Progress tracking.** Each yielded message is an observation point. The async lifecycle wrapper uses these observation points to update the task state machine, compute progress percentages, and generate notifications when the agent completes.
+**Progress tracking.** Mỗi message yield là một điểm quan sát. Async lifecycle wrapper dùng các điểm này để cập nhật task state machine, tính phần trăm tiến độ, và tạo notification khi agent hoàn tất.
 
 ---
 
 ## Built-In Agent Types
 
-Built-in agents are registered via `getBuiltInAgents()` in `builtInAgents.ts`. The registry is dynamic -- which agents are available depends on feature flags, GrowthBook experiments, and the session's entrypoint type. Six built-in agents ship with the system, each optimized for a specific class of work.
+Built-in agent được đăng ký qua `getBuiltInAgents()` trong `builtInAgents.ts`. Registry là động -- agent nào khả dụng phụ thuộc feature flag, GrowthBook experiment, và loại entrypoint của session. Có sáu built-in agent type đi kèm hệ thống, mỗi loại tối ưu cho một lớp công việc cụ thể.
 
 ### General-Purpose
 
-The default agent when `subagent_type` is omitted and fork is not active. Full tool access, no CLAUDE.md omission, model determined by `getDefaultSubagentModel()`. Its system prompt positions it as a completion-oriented worker: "Complete the task fully -- don't gold-plate, but don't leave it half-done." It includes guidelines for search strategy (broad first, then narrow) and file creation discipline (never create files unless the task requires it).
+Agent mặc định khi bỏ `subagent_type` và fork không hoạt động. Full tool access, không omit CLAUDE.md, model được quyết định bởi `getDefaultSubagentModel()`. System prompt đặt vai trò nó là worker thiên về hoàn thành: "Complete the task fully -- don't gold-plate, but don't leave it half-done." Nó có guideline về chiến lược tìm kiếm (rộng trước, hẹp sau) và kỷ luật tạo file (không tạo file nếu task không cần).
 
-This is the workhorse. When the model does not know what kind of agent it needs, it gets a general-purpose agent that can do everything the parent can do, minus spawning its own sub-agents. The "minus spawning" restriction is important: without it, a general-purpose child could spawn its own children, which could spawn theirs, creating an exponential fan-out that burns through API budget in seconds. The `Agent` tool is in the default disallowed list for good reason.
+Đây là con ngựa thồ chủ lực. Khi model không biết cần loại agent nào, nó nhận một general-purpose agent có thể làm mọi thứ parent làm được, trừ spawn sub-agent của chính nó. Hạn chế "trừ spawn" rất quan trọng: không có nó, một general-purpose child có thể sinh child của nó, rồi lớp sau lại sinh nữa, tạo fan-out lũy thừa và đốt API budget trong vài giây. Tool `Agent` nằm trong default disallowed list là có lý do.
 
 ### Explore
 
-A read-only search specialist. Uses Haiku (the cheapest, fastest model). Omits CLAUDE.md and git status. Has `FileEdit`, `FileWrite`, `NotebookEdit`, and `Agent` removed from its tool pool, enforced at both the tooling level and via a `=== CRITICAL: READ-ONLY MODE ===` section in its system prompt.
+Read-only search specialist. Dùng Haiku (rẻ nhất, nhanh nhất). Omit CLAUDE.md và git status. `FileEdit`, `FileWrite`, `NotebookEdit`, và `Agent` bị gỡ khỏi tool pool, được ép ở cả tầng tool lẫn prompt hệ thống có phần `=== CRITICAL: READ-ONLY MODE ===`.
 
-The Explore agent is the most aggressively optimized built-in because it is the most frequently spawned -- 34 million times per week across the fleet. It is marked as a one-shot agent (`ONE_SHOT_BUILTIN_AGENT_TYPES`), which means the agentId, SendMessage instructions, and usage trailer are skipped from its prompt, saving approximately 135 characters per invocation. At 34 million invocations, those 135 characters add up to roughly 4.6 billion characters per week of saved prompt tokens.
+Explore agent là built-in được tối ưu gắt nhất vì nó được spawn nhiều nhất -- 34 triệu lần mỗi tuần trên toàn fleet. Nó được đánh dấu one-shot agent (`ONE_SHOT_BUILTIN_AGENT_TYPES`), nghĩa là agentId, hướng dẫn SendMessage, và usage trailer bị lược khỏi prompt, tiết kiệm khoảng 135 ký tự mỗi lần gọi. Ở quy mô 34 triệu lần, 135 ký tự đó thành khoảng 4.6 tỷ ký tự mỗi tuần tiết kiệm được ở prompt token.
 
-Availability is gated by the `BUILTIN_EXPLORE_PLAN_AGENTS` feature flag AND the `tengu_amber_stoat` GrowthBook experiment, which A/B tests the impact of removing these specialized agents.
+Tính khả dụng bị gate bởi feature flag `BUILTIN_EXPLORE_PLAN_AGENTS` VÀ GrowthBook experiment `tengu_amber_stoat`, dùng để A/B test tác động khi bỏ các specialized agent này.
 
 ### Plan
 
-A software architect agent. Same read-only tool set as Explore but uses `'inherit'` for its model (same capability as the parent). Its system prompt guides it through a structured four-step process: Understand Requirements, Explore Thoroughly, Design Solution, Detail the Plan. It must end with a "Critical Files for Implementation" list.
+Agent kiến trúc phần mềm. Bộ tool read-only giống Explore nhưng dùng `'inherit'` cho model (cùng năng lực với parent). System prompt dẫn nó theo quy trình bốn bước có cấu trúc: Understand Requirements, Explore Thoroughly, Design Solution, Detail the Plan. Nó phải kết thúc bằng danh sách "Critical Files for Implementation".
 
-The Plan agent inherits the parent's model because architecture requires the same reasoning capability as implementation. You do not want a Haiku-class model making design decisions that an Opus-class model will have to execute. The model mismatch would produce plans that the executing agent cannot follow -- or worse, plans that sound plausible but are subtly wrong in ways that only a more capable model would catch.
+Plan agent kế thừa model của parent vì thiết kế kiến trúc cần năng lực suy luận ngang mức thực thi. Bạn không muốn model cỡ Haiku đưa quyết định thiết kế mà model cỡ Opus phải thi hành. Sai khác năng lực model sẽ tạo ra kế hoạch mà agent thực thi không theo nổi -- hoặc tệ hơn, kế hoạch nghe có vẻ hợp lý nhưng sai tinh vi theo cách chỉ model mạnh hơn mới bắt được.
 
-Same availability gate as Explore (`BUILTIN_EXPLORE_PLAN_AGENTS` + `tengu_amber_stoat`).
+Gate khả dụng giống Explore (`BUILTIN_EXPLORE_PLAN_AGENTS` + `tengu_amber_stoat`).
 
 ### Verification
 
-The adversarial tester. Read-only tools, `'inherit'` model, always runs in background (`background: true`), displayed in red in the terminal. Its system prompt is the most elaborate of any built-in agent at approximately 130 lines.
+Adversarial tester. Tool read-only, model `'inherit'`, luôn chạy nền (`background: true`), hiển thị đỏ trong terminal. System prompt của nó phức tạp nhất mọi built-in, khoảng 130 dòng.
 
-What makes the Verification agent interesting is its anti-avoidance programming. The prompt explicitly lists excuses the model might reach for and instructs it to "recognize them and do the opposite." Every check must include a "Command run" block with actual terminal output -- no hand-waving, no "this should work." The agent must include at least one adversarial probe (concurrency, boundary, idempotency, orphan cleanup). And before reporting a failure, it must check whether the behavior is intentional or handled elsewhere.
+Điều làm Verification agent thú vị là anti-avoidance programming (lập trình chống né tránh). Prompt liệt kê rõ các kiểu ngụy biện model có thể vin vào và yêu cầu nó "recognize them and do the opposite." Mỗi lượt check phải có block "Command run" với output terminal thực -- không nói suông, không "this should work." Agent phải có ít nhất một adversarial probe (concurrency, boundary, idempotency, orphan cleanup). Và trước khi báo lỗi, nó phải kiểm tra xem hành vi đó có chủ đích hay đã được xử lý ở nơi khác chưa.
 
-The `criticalSystemReminder_EXPERIMENTAL` field injects a reminder after every tool result, reinforcing that this is verification-only. This is a guardrail against the model drifting from "verify" to "fix" -- a tendency that would undermine the entire purpose of an independent verification pass. Language models have a strong inclination to be helpful, and "helpful" in most contexts means "fix the problem." The Verification agent's entire value proposition depends on resisting that inclination.
+Field `criticalSystemReminder_EXPERIMENTAL` inject nhắc nhở sau mỗi tool result, củng cố rằng đây chỉ là xác minh. Đây là guardrail chống model trôi từ "verify" sang "fix" -- xu hướng sẽ phá hỏng mục đích của một lượt kiểm chứng độc lập. Language model có xu hướng rất mạnh là muốn hữu ích, và "hữu ích" trong đa số ngữ cảnh nghĩa là "sửa vấn đề." Giá trị cốt lõi của Verification agent phụ thuộc vào việc cưỡng lại xu hướng đó.
 
-The `background: true` flag means the Verification agent always runs asynchronously. The parent does not wait for verification results -- it continues working while the verifier probes in the background. When the verifier finishes, a notification appears with the results. This mirrors how human code review works: the developer does not stop coding while the reviewer reads their PR.
+Cờ `background: true` nghĩa là Verification agent luôn chạy bất đồng bộ. Parent không chờ kết quả verify -- nó tiếp tục làm việc trong khi verifier dò ở nền. Khi verifier xong, một notification hiện kết quả. Cách này phản chiếu code review của con người: developer không ngừng coding trong lúc reviewer đọc PR.
 
-Availability is gated by the `VERIFICATION_AGENT` feature flag AND the `tengu_hive_evidence` GrowthBook experiment.
+Khả dụng bị gate bởi feature flag `VERIFICATION_AGENT` VÀ GrowthBook experiment `tengu_hive_evidence`.
 
 ### Claude Code Guide
 
-A documentation-fetching agent for questions about Claude Code itself, the Claude Agent SDK, and the Claude API. Uses Haiku, runs with `dontAsk` permission mode (no user prompts needed -- it only reads documentation), and has two hardcoded documentation URLs.
+Agent lấy tài liệu cho câu hỏi về chính Claude Code, Claude Agent SDK, và Claude API. Dùng Haiku, chạy với permission mode `dontAsk` (không cần prompt user -- nó chỉ đọc tài liệu), và có hai URL tài liệu hardcode.
 
-Its `getSystemPrompt()` is unique because it receives the `toolUseContext` and dynamically includes context about the project's custom skills, custom agents, configured MCP servers, plugin commands, and user settings. This lets it answer "how do I configure X?" by knowing what is already configured.
+`getSystemPrompt()` của nó là độc nhất vì nhận `toolUseContext` và đưa động thông tin về custom skill, custom agent, MCP server đã cấu hình, plugin command, và user setting của dự án. Điều này giúp nó trả lời "how do I configure X?" dựa trên thứ đã được cấu hình.
 
-Excluded when the entrypoint is SDK (TypeScript, Python, or CLI), since SDK users are not asking Claude Code how to use Claude Code. They are building their own tools on top of it.
+Bị loại khi entrypoint là SDK (TypeScript, Python, hoặc CLI), vì user SDK không hỏi Claude Code cách dùng Claude Code. Họ đang xây công cụ của riêng họ trên đó.
 
-The Guide agent is an interesting case study in agent design because it is the only built-in agent whose system prompt is dynamic in a way that depends on the user's project. It needs to know what is configured to answer "how do I configure X?" effectively. This makes its `getSystemPrompt()` function more complex than the others, but the trade-off is worth it -- a documentation agent that does not know what the user has already set up gives worse answers than one that does.
+Guide agent là một case study thú vị trong thiết kế agent vì nó là built-in duy nhất có system prompt động theo dự án người dùng. Nó cần biết đã cấu hình gì để trả lời tốt câu "how do I configure X?". Điều này làm `getSystemPrompt()` của nó phức tạp hơn phần còn lại, nhưng đánh đổi đáng giá -- một agent tài liệu không biết user đã setup gì sẽ trả lời kém hơn agent biết rõ bối cảnh.
 
 ### Statusline Setup
 
-A specialized agent for configuring the terminal status line. Uses Sonnet, displayed in orange, limited to `Read` and `Edit` tools only. Knows how to convert shell PS1 escape sequences to shell commands, write to `~/.claude/settings.json`, and handle the `statusLine` command's JSON input format.
+Agent chuyên dụng cấu hình status line cho terminal. Dùng Sonnet, hiển thị cam, giới hạn chỉ `Read` và `Edit`. Nó biết cách chuyển PS1 escape sequence của shell thành shell command, ghi vào `~/.claude/settings.json`, và xử lý format input JSON của lệnh `statusLine`.
 
-This is the most narrowly-scoped built-in agent -- it exists because status line configuration is a self-contained domain with specific formatting rules that would clutter a general-purpose agent's context. Always available, no feature gate.
+Đây là built-in hẹp phạm vi nhất -- nó tồn tại vì cấu hình status line là một miền tự chứa với quy tắc định dạng đặc thù, sẽ làm rối context của general-purpose agent. Luôn khả dụng, không gate bằng feature.
 
-The Statusline Setup agent illustrates an important principle: **sometimes a specialized agent is better than a general-purpose agent with more context.** A general-purpose agent given the status line documentation as context would probably configure it correctly. But it would also be more expensive (bigger model), slower (more context to process), and more likely to get confused by the interaction between status line syntax and the task at hand. A dedicated Sonnet agent with Read and Edit tools and a focused system prompt does the job faster, cheaper, and more reliably.
+Statusline Setup agent minh họa một nguyên lý quan trọng: **đôi khi một specialized agent tốt hơn một general-purpose agent với nhiều context hơn.** Một general-purpose agent được cấp tài liệu status line có thể cũng cấu hình đúng. Nhưng nó sẽ đắt hơn (model lớn hơn), chậm hơn (nhiều context hơn để xử lý), và dễ rối hơn bởi tương tác giữa cú pháp status line và task hiện tại. Một Sonnet agent chuyên dụng với tool Read và Edit và system prompt tập trung làm việc nhanh hơn, rẻ hơn, và ổn định hơn.
 
 ### The Worker Agent (Coordinator Mode)
 
-Not in the `built-in/` directory but loaded dynamically when coordinator mode is active:
+Không nằm trong thư mục `built-in/` nhưng được nạp động khi coordinator mode bật:
 
 ```typescript
 if (isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) {
@@ -624,19 +624,19 @@ if (isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) {
 }
 ```
 
-The worker agent replaces all standard built-in agents in coordinator mode. It has a single type `"worker"` and full tool access. This simplification is deliberate -- when a coordinator is orchestrating workers, the coordinator decides what each worker does. The worker does not need the specialization of Explore or Plan; it needs the flexibility to do whatever the coordinator assigns.
+Worker agent thay thế toàn bộ built-in agent chuẩn trong coordinator mode. Nó chỉ có một type `"worker"` với full tool access. Sự đơn giản này có chủ đích -- khi coordinator điều phối worker, coordinator quyết định mỗi worker làm gì. Worker không cần chuyên biệt kiểu Explore hay Plan; nó cần linh hoạt để làm bất kỳ việc coordinator giao.
 
 ---
 
 ## Fork Agents
 
-Fork agents -- where the child inherits the parent's full conversation history, system prompt, and tool array for prompt cache exploitation -- are the subject of Chapter 9. The fork path triggers when the model omits `subagent_type` from the Agent tool call and the fork experiment is active. Every design decision in the fork system traces back to a single goal: byte-identical API request prefixes across parallel children, enabling 90% cache discounts on shared context.
+Fork agent -- nơi child kế thừa toàn bộ conversation history, system prompt, và tool array của parent để khai thác prompt cache -- là chủ đề của Chương 9. Nhánh fork kích hoạt khi model bỏ `subagent_type` trong Agent tool call và fork experiment đang bật. Mọi quyết định thiết kế trong hệ fork đều truy về một mục tiêu duy nhất: API request prefix byte-identical giữa các child chạy song song, để hưởng mức giảm giá cache 90% trên ngữ cảnh dùng chung.
 
 ---
 
 ## Agent Definitions from Frontmatter
 
-Users and plugins can define custom agents by placing markdown files in `.claude/agents/`. The frontmatter schema supports the full range of agent configuration:
+User và plugin có thể định nghĩa custom agent bằng cách đặt file markdown trong `.claude/agents/`. Frontmatter schema hỗ trợ đầy đủ dải cấu hình agent:
 
 ```yaml
 ---
@@ -672,82 +672,82 @@ effort: high
 You are a specialized agent for...
 ```
 
-The markdown body becomes the agent's system prompt. The frontmatter fields map directly to the `AgentDefinition` interface that `runAgent()` consumes. The loading pipeline in `loadAgentsDir.ts` validates the frontmatter against `AgentJsonSchema`, resolves the source (user, plugin, or policy), and registers the agent in the available agents list.
+Phần thân markdown trở thành system prompt của agent. Các field frontmatter map trực tiếp vào interface `AgentDefinition` mà `runAgent()` tiêu thụ. Pipeline nạp trong `loadAgentsDir.ts` validate frontmatter theo `AgentJsonSchema`, resolve nguồn (user, plugin, hoặc policy), và đăng ký agent vào danh sách agent khả dụng.
 
-Four sources of agent definitions exist, in priority order:
+Có bốn nguồn definition của agent, theo thứ tự ưu tiên:
 
-1. **Built-in agents** -- hardcoded in TypeScript, always available (subject to feature gates)
-2. **User agents** -- markdown files in `.claude/agents/`
-3. **Plugin agents** -- loaded via `loadPluginAgents()`
-4. **Policy agents** -- loaded via organizational policy settings
+1. **Built-in agents** -- hardcode bằng TypeScript, luôn khả dụng (tùy feature gate)
+2. **User agents** -- file markdown trong `.claude/agents/`
+3. **Plugin agents** -- nạp qua `loadPluginAgents()`
+4. **Policy agents** -- nạp qua organizational policy settings
 
-When the model calls `Agent` with a `subagent_type`, the system resolves the name against this combined list, filtering by permission rules (deny rules for `Agent(AgentName)`) and by `allowedAgentTypes` from the tool spec. If the requested agent type is not found or is denied, the tool call fails with an error.
+Khi model gọi `Agent` với `subagent_type`, hệ thống resolve tên trên danh sách hợp nhất này, lọc theo permission rule (deny rule cho `Agent(AgentName)`) và theo `allowedAgentTypes` từ tool spec. Nếu agent type yêu cầu không tồn tại hoặc bị deny, tool call thất bại với lỗi.
 
-This design means that organizations can ship custom agents via plugins (a code review agent, a security audit agent, a deployment agent) and have them appear seamlessly alongside the built-in agents. The model sees them in the same list, with the same interface, and delegates to them the same way.
+Thiết kế này cho phép tổ chức phát hành custom agent qua plugin (agent review code, agent audit bảo mật, agent triển khai) và để chúng xuất hiện liền mạch cạnh built-in agent. Model thấy cùng một danh sách, cùng một interface, và ủy quyền cho chúng theo cùng cách.
 
-The power of frontmatter-defined agents is that they require zero TypeScript. A team lead who wants a "PR review" agent writes a markdown file with the right frontmatter, drops it in `.claude/agents/`, and it appears in every team member's agent list on their next session. The system prompt is the markdown body. The tool restrictions, model preference, and permission mode are declared in YAML. The `runAgent()` lifecycle handles everything else -- the same fifteen steps, the same cleanup, the same isolation guarantees.
+Sức mạnh của frontmatter-defined agent là không cần TypeScript. Một team lead muốn agent "PR review" chỉ việc viết file markdown với frontmatter phù hợp, thả vào `.claude/agents/`, và nó xuất hiện trong danh sách agent của mọi thành viên team ở session tiếp theo. System prompt là thân markdown. Tool restriction, model preference, và permission mode được khai báo trong YAML. Lifecycle `runAgent()` xử lý phần còn lại -- cùng 15 bước, cùng cleanup, cùng bảo đảm isolation.
 
-This also means that agent definitions are version-controlled alongside the codebase. A repository can ship agents tailored to its architecture, conventions, and tooling. The agents evolve with the code. When the team adopts a new testing framework, the verification agent's prompt is updated in the same commit that adds the framework dependency.
+Điều này cũng có nghĩa definition của agent được version-control cùng codebase. Repository có thể phát hành agent được may đo theo kiến trúc, quy ước, và tooling của nó. Agent tiến hóa cùng code. Khi team nhận framework test mới, prompt của verification agent được cập nhật trong cùng commit thêm dependency framework.
 
-There is one important security consideration: the trust boundary. User agents (from `.claude/agents/`) are user-controlled -- their hooks, MCP servers, and tool configurations are subject to `strictPluginOnlyCustomization` restrictions when those policies are active. Plugin agents and policy agents are admin-trusted and bypass these restrictions. Built-in agents are part of the Claude Code binary itself. The system tracks the `source` of each agent definition precisely so that security policies can distinguish between "the user wrote this" and "the organization approved this."
+Có một lưu ý security quan trọng: trust boundary. User agent (từ `.claude/agents/`) là user-controlled -- hook, MCP server, và cấu hình tool của chúng chịu ràng buộc `strictPluginOnlyCustomization` khi policy đó bật. Plugin agent và policy agent là admin-trusted nên vượt các ràng buộc này. Built-in agent là một phần của binary Claude Code. Hệ thống theo dõi chính xác `source` của mỗi definition để security policy phân biệt được "user tự viết" và "tổ chức đã phê duyệt".
 
-The `source` field is not just metadata -- it gates real behavior. When a plugin-only policy is active for MCP, user agent frontmatter that declares MCP servers is silently skipped (the MCP connections are not established). When a plugin-only policy is active for hooks, user agent frontmatter hooks are not registered. The agent still runs -- it just runs without the untrusted extensions. This is a principle of graceful degradation: the agent is useful even when its full capabilities are restricted by policy.
+Field `source` không chỉ là metadata -- nó gate hành vi thật. Khi policy plugin-only bật cho MCP, frontmatter của user agent khai báo MCP server sẽ bị bỏ qua im lặng (MCP connection không được thiết lập). Khi policy plugin-only bật cho hook, hook trong frontmatter của user agent không được đăng ký. Agent vẫn chạy -- chỉ là chạy mà không có extension không đáng tin. Đây là nguyên tắc graceful degradation: agent vẫn hữu ích ngay cả khi đầy đủ năng lực của nó bị policy giới hạn.
 
 ---
 
 ## Apply This: Designing Agent Types
 
-The built-in agents demonstrate a pattern language for agent design. If you are building a system that spawns sub-agents -- whether using Claude Code's AgentTool directly or designing your own multi-agent architecture -- the design space breaks down into five dimensions.
+Các built-in agent cho thấy một pattern language (ngôn ngữ mẫu) cho thiết kế agent. Nếu bạn xây hệ thống spawn sub-agent -- dù dùng trực tiếp AgentTool của Claude Code hay tự thiết kế kiến trúc multi-agent -- không gian thiết kế tách thành năm chiều.
 
 ### Dimension 1: What Can It See?
 
-The combination of `omitClaudeMd`, git status stripping, and skill preloading controls the agent's awareness. Read-only agents see less (they do not need project conventions). Specialized agents see more (preloaded skills inject domain knowledge).
+Tổ hợp của `omitClaudeMd`, việc strip git status, và skill preloading điều khiển mức nhận biết của agent. Agent read-only nhìn thấy ít hơn (không cần quy ước dự án). Agent chuyên biệt nhìn thấy nhiều hơn (skill preload tiêm tri thức miền).
 
-The key insight is that context is not free. Every token in the system prompt, user context, or conversation history costs money and displaces working memory. Claude Code strips CLAUDE.md from Explore agents not because those instructions are harmful, but because they are irrelevant -- and irrelevance at 34 million spawns per week becomes a line item on the infrastructure bill. When designing your own agent types, ask: "What does this agent need to know to do its job?" and strip everything else.
+Insight then chốt là context không miễn phí. Mỗi token trong system prompt, user context, hoặc conversation history đều tốn tiền và chiếm working memory. Claude Code strip CLAUDE.md khỏi Explore agent không phải vì chỉ dẫn đó có hại, mà vì nó không liên quan -- và thứ không liên quan ở quy mô 34 triệu lượt spawn mỗi tuần sẽ thành một dòng chi phí hạ tầng. Khi thiết kế agent type của bạn, hãy hỏi: "Agent này cần biết gì để làm việc?" rồi strip mọi thứ còn lại.
 
 ### Dimension 2: What Can It Do?
 
-The `tools` and `disallowedTools` fields set hard boundaries. The Verification agent cannot edit files. The Explore agent cannot write anything. The General-Purpose agent can do everything except spawn sub-agents of its own.
+Field `tools` và `disallowedTools` dựng biên cứng. Verification agent không sửa file. Explore agent không ghi gì cả. General-Purpose agent làm mọi thứ trừ spawn sub-agent riêng.
 
-Tool restrictions serve two purposes: **safety** (the Verification agent cannot accidentally "fix" what it finds, preserving its independence) and **focus** (an agent with fewer tools spends less time deciding which tool to use). The pattern of combining tool-level restrictions with system prompt guidance (Explore's `=== CRITICAL: READ-ONLY MODE ===`) is defense in depth -- the tools enforce the boundary mechanically, and the prompt explains *why* the boundary exists so the model does not waste turns trying to work around it.
+Tool restriction có hai mục tiêu: **safety** (Verification agent không thể vô tình "fix" thứ nó phát hiện, giữ tính độc lập) và **focus** (agent ít tool hơn mất ít thời gian quyết định chọn tool nào). Mẫu kết hợp giới hạn ở tầng tool với chỉ dẫn trong system prompt (Explore có `=== CRITICAL: READ-ONLY MODE ===`) là defense in depth (phòng thủ nhiều lớp) -- tool cưỡng chế biên giới bằng cơ chế, còn prompt giải thích *vì sao* có biên giới đó để model không phí lượt cố lách qua.
 
 ### Dimension 3: How Does It Interact with the User?
 
-The `permissionMode` and `canShowPermissionPrompts` settings determine whether the agent asks for permission, auto-denies, or bubbles prompts to the parent's terminal. Background agents that cannot interrupt the user must either work within pre-approved boundaries or bubble.
+Thiết lập `permissionMode` và `canShowPermissionPrompts` quyết định agent sẽ xin quyền, auto-deny, hay bubble prompt lên terminal của parent. Background agent không thể ngắt user thì phải hoặc làm trong biên đã phê duyệt, hoặc bubble.
 
-The `awaitAutomatedChecksBeforeDialog` setting is a nuance worth understanding. Background agents that *can* show prompts (bubble mode) wait for the classifier and permission hooks to run before interrupting the user. This means the user is only interrupted for genuinely ambiguous permissions -- not for things the automated system could have resolved. In a multi-agent system where five background agents are running simultaneously, this is the difference between a usable interface and a permission-prompt barrage.
+Thiết lập `awaitAutomatedChecksBeforeDialog` là một sắc thái đáng hiểu. Background agent *có thể* hiện prompt (bubble mode) sẽ chờ classifier và permission hook chạy trước khi làm phiền user. Nghĩa là user chỉ bị ngắt cho các quyền thực sự mơ hồ -- không phải thứ hệ tự động giải quyết được. Trong hệ multi-agent có năm background agent chạy cùng lúc, đây là khác biệt giữa giao diện dùng được và cơn mưa permission prompt.
 
 ### Dimension 4: How Does It Relate to the Parent?
 
-Sync agents block the parent and share its state. Async agents run independently with their own abort controller. Fork agents inherit the full conversation context. The choice shapes both the user experience (does the parent wait?) and the system behavior (does Escape kill the child?).
+Sync agent chặn parent và chia sẻ state của parent. Async agent chạy độc lập với abort controller riêng. Fork agent kế thừa đầy đủ conversation context. Lựa chọn này định hình cả trải nghiệm user (parent có phải chờ không?) lẫn hành vi hệ thống (Escape có giết child không?).
 
-The abort controller decision in Step 8 crystallizes this: sync agents share the parent's controller (Escape kills both), async agents get their own (Escape leaves them running). Fork agents go further -- they inherit the parent's system prompt, tool array, and message history to maximize prompt cache sharing. Each relationship type has a clear use case: sync for sequential delegation ("do this then I'll continue"), async for parallel work ("do this while I do something else"), and fork for context-heavy delegation ("you know everything I know, now go handle this part").
+Quyết định abort controller ở Bước 8 kết tinh điều này: sync agent chia sẻ controller của parent (Escape giết cả hai), async agent có controller riêng (Escape để chúng tiếp tục). Fork agent đi xa hơn -- kế thừa system prompt, tool array, và message history của parent để tối đa chia sẻ prompt cache. Mỗi kiểu quan hệ có use case rõ: sync cho ủy quyền tuần tự ("làm cái này rồi tôi tiếp"), async cho công việc song song ("làm cái này trong khi tôi làm việc khác"), và fork cho ủy quyền nặng context ("bạn biết mọi thứ tôi biết, giờ xử lý phần này").
 
 ### Dimension 5: How Expensive Is It?
 
-The model choice, thinking config, and context size all contribute to cost. Haiku for cheap read-only work. Sonnet for moderate tasks. Inherit-from-parent for tasks requiring the parent's reasoning capability. Thinking is disabled for non-fork agents to control output token costs -- the parent pays for reasoning; the children execute.
+Lựa chọn model, thinking config, và kích thước context cùng đóng góp vào chi phí. Haiku cho việc read-only rẻ. Sonnet cho tác vụ mức trung. Inherit-from-parent cho việc cần năng lực suy luận của parent. Thinking bị tắt cho non-fork agent để kiểm soát chi phí output token -- parent trả tiền cho suy luận; child thực thi.
 
-The economic dimension is often an afterthought in multi-agent system design, but it is central to Claude Code's architecture. An Explore agent that used Opus instead of Haiku would work fine for any individual invocation. But at 34 million invocations per week, the model choice is a multiplicative cost factor. The one-shot optimization that saves 135 characters per Explore invocation translates to 4.6 billion characters per week of saved prompt tokens. These are not micro-optimizations -- they are the difference between a viable product and an unaffordable one.
+Chiều kinh tế thường là chuyện nghĩ sau trong thiết kế multi-agent, nhưng là trung tâm của kiến trúc Claude Code. Explore agent dùng Opus thay Haiku vẫn hoạt động tốt cho từng lần gọi lẻ. Nhưng ở 34 triệu lượt gọi mỗi tuần, chọn model là hệ số nhân chi phí. One-shot optimization tiết kiệm 135 ký tự mỗi lượt Explore tương đương 4.6 tỷ ký tự mỗi tuần tiết kiệm ở prompt token. Đây không phải micro-optimization -- đây là ranh giới giữa sản phẩm khả thi và sản phẩm không thể chi trả.
 
 ### The Unified Lifecycle
 
-The `runAgent()` lifecycle implements all five dimensions through its fifteen steps, assembling a unique execution environment for each agent type from the same set of building blocks. The result is a system where spawning a sub-agent is not "run another copy of the parent." It is the creation of a precisely-scoped, resource-controlled, isolated execution context -- tailored to the work at hand, and cleaned up completely when the work is done.
+Lifecycle `runAgent()` hiện thực cả năm chiều qua 15 bước, lắp thành môi trường thực thi riêng cho từng agent type từ cùng một bộ khối xây dựng. Kết quả là spawn sub-agent không phải "chạy thêm một bản sao của parent." Nó là tạo một execution context được định phạm vi chính xác, kiểm soát tài nguyên, cách ly -- phù hợp với công việc trước mắt, và được dọn sạch hoàn toàn khi xong việc.
 
-The architectural elegance is in the uniformity. Whether the agent is a Haiku-powered read-only searcher or an Opus-powered fork child with full tool access and bubble permissions, it flows through the same fifteen steps. The steps do not branch based on agent type -- they parameterize. Model resolution picks the right model. Context preparation picks the right file state. Permission isolation picks the right mode. The agent type is not encoded in control flow; it is encoded in configuration. And that is what makes the system extensible: adding a new agent type means writing a definition, not modifying the lifecycle.
+Sự thanh lịch kiến trúc nằm ở tính đồng nhất. Dù agent là read-only searcher chạy Haiku hay fork child chạy Opus với full tool access và bubble permission, nó đều đi cùng 15 bước. Các bước không rẽ nhánh theo agent type -- chúng tham số hóa. Model resolution chọn đúng model. Context preparation chọn đúng file state. Permission isolation chọn đúng mode. Agent type không mã hóa trong control flow; nó mã hóa trong configuration. Và đó là thứ làm hệ thống mở rộng được: thêm agent type mới nghĩa là viết definition, không phải sửa lifecycle.
 
 ### The Design Space Summarized
 
-The six built-in agents cover a spectrum:
+Sáu built-in agent phủ một phổ:
 
 | Agent | Model | Tools | Context | Sync/Async | Purpose |
 |-------|-------|-------|---------|------------|---------|
-| General-Purpose | Default | All | Full | Either | Workhorse delegation |
-| Explore | Haiku | Read-only | Stripped | Sync | Fast, cheap search |
-| Plan | Inherit | Read-only | Stripped | Sync | Architecture design |
-| Verification | Inherit | Read-only | Full | Always async | Adversarial testing |
-| Guide | Haiku | Read + Web | Dynamic | Sync | Documentation lookup |
-| Statusline | Sonnet | Read + Edit | Minimal | Sync | Config task |
+| General-Purpose | Default | All | Full | Either | Ủy quyền công việc chủ lực |
+| Explore | Haiku | Read-only | Stripped | Sync | Tìm kiếm nhanh, rẻ |
+| Plan | Inherit | Read-only | Stripped | Sync | Thiết kế kiến trúc |
+| Verification | Inherit | Read-only | Full | Always async | Kiểm thử đối kháng |
+| Guide | Haiku | Read + Web | Dynamic | Sync | Tra cứu tài liệu |
+| Statusline | Sonnet | Read + Edit | Minimal | Sync | Tác vụ cấu hình |
 
-No two agents make the same choices across all five dimensions. Each is optimized for its specific use case. And the `runAgent()` lifecycle handles all of them through the same fifteen steps, parameterized by the agent definition. This is the power of the architecture: the lifecycle is a universal machine, and the agent definitions are the programs that run on it.
+Không có hai agent nào chọn giống nhau trên cả năm chiều. Mỗi agent được tối ưu cho use case riêng. Và lifecycle `runAgent()` xử lý tất cả qua cùng 15 bước, tham số hóa theo agent definition. Đây là sức mạnh của kiến trúc: lifecycle là máy phổ dụng, còn agent definition là chương trình chạy trên máy đó.
 
-The next chapter examines fork agents in depth -- the prompt cache exploitation mechanism that makes parallel delegation economically viable. Chapter 10 then follows with the orchestration layer: how async agents report progress through the task state machine, how the parent retrieves results, and how the coordinator pattern orchestrates dozens of agents working toward a single goal. If this chapter was about *creating* agents, Chapter 9 is about making them cheap, and Chapter 10 is about *managing* them.
+Chương tiếp theo đi sâu vào fork agent -- cơ chế khai thác prompt cache khiến ủy quyền song song khả thi về kinh tế. Chương 10 theo sau với lớp orchestration: async agent báo tiến độ qua task state machine như thế nào, parent lấy kết quả ra sao, và coordinator pattern điều phối hàng chục agent làm việc về cùng một mục tiêu. Nếu chương này nói về *tạo* agent, Chương 9 nói về làm cho chúng rẻ, và Chương 10 nói về *quản trị* chúng.

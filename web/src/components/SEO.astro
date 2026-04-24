@@ -3,16 +3,37 @@ interface Props {
   title: string;
   description: string;
   ogImage?: string;
+  lang?: string;
 }
 
-const { title, description, ogImage } = Astro.props;
-const canonicalURL = new URL(Astro.url.pathname, Astro.site);
-const ogImageURL = ogImage || new URL('/og-image.jpg', Astro.site).href;
+const { title, description, ogImage, lang = 'vi' } = Astro.props;
+const siteUrl = Astro.site || 'http://localhost';
+const canonicalURL = new URL(Astro.url.pathname, siteUrl);
+const ogImageURL = ogImage || new URL('/og-image.jpg', siteUrl).href;
+
+const path = Astro.url.pathname;
+const rawBase = import.meta.env.BASE_URL;
+const base = rawBase.endsWith('/') ? rawBase : rawBase + '/';
+const isEn = path.startsWith(`${base}en/`);
+
+let viPath = path;
+let enPath = path;
+if (isEn) {
+  viPath = path.replace(`${base}en/`, base);
+} else {
+  enPath = path.replace(base, `${base}en/`);
+}
+
+const viUrl = new URL(viPath, siteUrl).href;
+const enUrl = new URL(enPath, siteUrl).href;
 ---
 
 <title>{title}</title>
 <meta name="description" content={description} />
 <link rel="canonical" href={canonicalURL.href} />
+<link rel="alternate" hreflang="vi" href={viUrl} />
+<link rel="alternate" hreflang="en" href={enUrl} />
+<link rel="alternate" hreflang="x-default" href={viUrl} />
 
 <!-- Open Graph -->
 <meta property="og:type" content="website" />

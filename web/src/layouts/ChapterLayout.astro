@@ -23,23 +23,24 @@ interface Props {
   prev: ChapterConfig | null;
   next: ChapterConfig | null;
   part: PartConfig | undefined;
+  lang?: string;
 }
 
-const { title, description, chapterNumber, slug, headings, prev, next, part } = Astro.props;
-const showPartHeader = part && isFirstChapterOfPart(chapterNumber);
+const { title, description, chapterNumber, slug, headings, prev, next, part, lang = 'vi' } = Astro.props;
+const showPartHeader = part && isFirstChapterOfPart(chapterNumber, lang);
 ---
 
-<BaseLayout title={`Ch ${chapterNumber}. ${title} | Claude Code from Source`} description={description}>
+<BaseLayout title={`Ch ${chapterNumber}. ${title} | Claude Code from Source`} description={description} lang={lang}>
   <ReadingProgress />
-  <Header />
+  <Header lang={lang} currentSlug={slug} />
 
   <div id="chapter-layout" class="flex max-w-[90rem] mx-auto">
-    <Sidebar currentSlug={slug} />
+    <Sidebar currentSlug={slug} lang={lang} />
 
     <main class="flex-1 min-w-0 px-4 md:px-8 lg:px-12 py-8 transition-all duration-200">
       {showPartHeader && (
         <div class="mb-8 pb-6 border-b border-[var(--color-border)] dark:border-[#333]">
-          <p class="text-xs font-semibold uppercase tracking-wider text-[var(--color-terracotta)] mb-1">Part {part!.number}</p>
+          <p class="text-xs font-semibold uppercase tracking-wider text-[var(--color-terracotta)] mb-1">{lang === 'vi' ? 'Phần' : 'Part'} {part!.number}</p>
           <h2 class="text-2xl font-bold text-[var(--color-charcoal)] dark:text-[var(--color-cream)] font-[var(--font-serif)]">{part!.title}</h2>
           <p class="text-sm italic text-[var(--color-muted)] mt-2">{part!.epigraph}</p>
         </div>
@@ -51,7 +52,7 @@ const showPartHeader = part && isFirstChapterOfPart(chapterNumber);
 
       <InteractiveDiagrams chapterNumber={chapterNumber} />
 
-      <ChapterNav prev={prev} next={next} />
+      <ChapterNav prev={prev} next={next} lang={lang} />
     </main>
 
     <TableOfContents headings={headings} />

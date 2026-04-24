@@ -1,0 +1,773 @@
+1-hour TTL
+3.1 Bootstrap State -- The Process Singleton
+3.2 AppState -- The Reactive Store
+3.3 How the Two Tiers Relate
+3.4 Side Effects: onChangeAppState
+3.5 Context Building
+3.6 Cost Tracking
+3.7 What We Learned
+3.8 State Architecture Summary
+529 (overloaded)
+A Real-World Hook: Preventing Commits to Main
+AI
+AI-powered
+AND
+API
+API Preconnection
+API failed
+API layer
+Abort Controller Isolation
+Abort Handling: Two Paths
+Additional Dirs
+Agent Definitions from Frontmatter
+Agent ID Creation
+Agent Name Registry
+Agent hooks
+AgentTool and Context Modifiers
+Agentic CLI
+Algorithm R
+Anthropic SDK
+AppState
+Apply This
+Apply This: Building Your Own Agent Loop
+Apply This: Designing Agent Memory
+Apply This: Designing Remote Agent Execution
+Apply This: Designing a Tool System
+Apply This: Designing an Extensibility System
+Apply This: Designing for Prompt Cache Efficiency
+Apply This: Integrating MCP Into Your Own Agent
+Apply This: Performance for Agentic Systems
+Apply This: Rendering Streaming Output Efficiently
+Asymmetric transport
+Async Indexing with Partial Queryability
+Authorization Server Metadata
+Auto-Backgrounding
+Auto-Compact Thresholds
+Autonomous Operation
+Background Extraction
+Background: Three Channels
+Backwards-compatible
+BashTool: The Most Complex Tool
+Batch Execution
+Batched Connections
+Begin Synchronized Update
+Bet 1: The Generator Loop Over Callbacks
+Bet 2: File-Based Memory Over Databases
+Bet 3: Self-Describing Tools Over Central Orchestrators
+Bet 4: Fork Agents for Cache Sharing
+Bet 5: Hooks Over Plugins
+Beta headers
+Bindings: Declarative Configuration
+Blake2b prefix hash variants
+Bootstrap State
+BoundedUUIDSet: O(1) Lookup, O(capacity) Memory
+Bracketed paste
+Branchless modulo-256
+Bridge v1: Poll, Dispatch, Spawn
+Bridge v2: Direct Sessions and SSE
+Bubble Mode for Sub-Agents
+Built-In Agent Types
+CLAUDE.md Stripping
+CSI u (Kitty keyboard protocol)
+Cache-Safe Params Callback
+Chapter 10: Tasks, Coordination, and Swarms
+Chapter 11: Memory -- Learning Across Conversations
+Chapter 12: Extensibility -- Skills and Hooks
+Chapter 13: The Terminal UI
+Chapter 14: Input and Interaction
+Chapter 15: MCP -- The Universal Tool Protocol
+Chapter 16: Remote Control and Cloud Execution
+Chapter 17: Performance -- Every Millisecond and Token Counts
+Chapter 18: What We Learned
+Chapter 1: The Architecture of an AI Agent
+Chapter 2: Starting Fast -- The Bootstrap Pipeline
+Chapter 3: State -- The Two-Tier Architecture
+Chapter 4: Talking to Claude -- The API Layer
+Chapter 5: The Agent Loop
+Chapter 6: Tools -- From Definition to Execution
+Chapter 7: Concurrent Tool Execution
+Chapter 8: Spawning Sub-Agents
+Chapter 9: Fork Agents and the Prompt Cache
+Choosing Between Patterns
+Chord Support
+Claude Code
+Claude Code Guide
+Claude.ai Proxy Transport
+Cleanup
+Closing
+Command hooks
+Command queue
+Communication Patterns
+Concurrency Is Input-Dependent
+Concurrent Batches
+ConcurrentRoot mode
+Configuration Loading and Scoping
+Connection Management
+Connection States
+Context Creation
+Context Management: Four Compression Layers
+Context Modifiers: The Serial-Only Contract
+Context Preparation
+Context Window Sizing
+Context-Aware Keybinding System
+Contexts: 16 Scopes of Activity
+Continue States (7 reasons)
+Cross-App Access (XAA)
+DAG leaf
+DANGEROUS naming convention
+DNS
+Dead token detection
+Dependency Injection
+Design Tensions
+Designing Agent Types
+Direct Connect: The Local Server
+Discovery Chain
+Disk output files
+Double-Buffer Rendering and Frame Scheduling
+Dynamic Discovery
+Dynamic boundary
+Echo deduplication
+Eight Transport Types
+End Synchronized Update
+Enterprise-controlled
+Environment injection sets
+Ephemeral cache
+Epoch management
+Error Body Normalization
+Error Handling and Retry
+Error Recovery: The Escalation Ladder
+Events representing irrevocable facts
+Events representing recoverable decisions
+Exact prefix matching
+Execution Flow
+Exit Code
+Exit Code Semantics
+Explore
+FIFO-bounded set
+Fail open
+Fast-Path Dispatch and Deferred Imports
+Fast-path dispatch
+Feature Gating
+Feature-gated
+Fifteen-step lifecycle
+FileEditTool: Staleness Detection
+FileReadTool: The Versatile Reader
+Five Architectural Bets
+Five Statuses
+Fork Agents
+Four User-Configurable Types
+Frontmatter as Contract
+GFM parser
+General-Purpose
+Global cache scope
+Global scope
+GrepTool: Pagination via head_limit
+HTTP
+HTTP hooks
+Hook Registration
+Hooks
+Hooks are Claude Code
+Hooks are control flow
+Hooks execute arbitrary code
+Hooks: Controlling When Things Happen
+How Tools Interact with the Message History
+How the Pieces Connect
+Identity Provider
+Immutable Transitions in a Mutable Loop
+In-Process Teammates
+In-Process Transport
+In-memory
+Individual Tool Highlights
+Input Method Editor
+Integration: Where Skills Meet Hooks
+Inter-Agent Communication
+Isolation vs. cache efficiency
+JSON
+JSON-RPC 2.0
+KAIROS Mode: Append-Only Daily Logs
+Kill switch check
+LLM
+LLM-powered recall
+LRU file cache
+Layer 0: Tool Result Budget
+Layer 1: Snip Compact
+Layer 2: Microcompact
+Layer 3: Context Collapse
+Layer 4: Auto-Compact
+Legacy Commands
+Legacy terminal sequences
+Long-poll loop
+MCP
+MCP Initialization
+MCP as the Universal Protocol
+MCP server prompts
+MEMORY.md as the Always-Loaded Index
+Memory
+Message Routing and Echo Deduplication
+Message normalization
+Model Context Protocol
+Model Fallback
+Model Resolution
+Model Streaming
+Modifier decoding
+Module-Level I/O Parallelism
+Motions, Operators, and Text Objects
+Multi-Agent Coordination
+Multi-Protocol Support
+Multi-Provider Architecture
+Mutual Exclusion with Fork
+NDJSON
+NFC normalization
+NFS
+Non-Streaming Fallback
+Non-blocking
+OAuth 2.0 + PKCE
+OAuth discovery
+Order Preservation
+Orphaned Tool Results: The Protocol Safety Net
+Output Token Cap
+POST
+Path Resolution and Security
+Patterns Specific to Claude Code's Scale
+Patterns That Transfer to Any Agent
+Per-Conversation Aggregate Budget
+Per-Project Scoping
+Per-Tool Size Limits
+Per-message aggregate budget
+Permission Behavior Precedence
+Permission Forwarding
+Permission Isolation
+Permission Rules and Matching
+Persistent Memory
+Persistent State and Dot-Repeat
+Phase 0: Fast-Path Dispatch (cli.tsx)
+Phase 1: Module-Level I/O (main.tsx)
+Phase 2: Parse and Trust (init.ts)
+Phase 3: Setup (setup.ts)
+Phase 4: Launch (replLauncher.ts)
+Plan
+Pool-Based Memory: Why Interning Matters
+Progress Tracking
+Promise parallelism
+Prompt Cache
+Prompt Cache System
+Prompt cache architecture
+Prompt hooks
+Protobuf Hand-Encoding
+Query Loop
+RFC 8414
+RFC 9728
+Raw Bytes, Meaningful Actions
+Raw SSE Over SDK Abstractions
+React Compiler
+React Fiber Container
+React reconciler
+Recursive Fork Prevention
+Remote Session Management
+Rendering throughput
+ReplBridgeTransport
+Reserved Shortcuts
+Result Budgeting
+Result Harvesting
+Retrieval-Augmented Generation
+Retry-wrapped streaming
+Routing Dispatch
+SGR mouse events
+SSRF
+Safety vs. cache efficiency
+Scope Guidance
+Score-Bound Rejection and Fused indexOf Scan
+Search speed
+Section Memoization
+Selection and Search Highlighting
+Sequence number cursor
+Serial Batches
+Session Expiry Detection
+Seven Modes
+Seven Sources with Priority
+Seven Types
+Simplicity vs. cache efficiency
+Six Hook Sources
+Skill Preloading
+Skills add capabilities
+Skills: Teaching the Model New Tricks
+Slot Reservation: 8K Default, 64K Escalation
+Speculative Tool Execution
+Split-brain scenarios
+Staleness
+Startup latency
+Startup profiling checkpoints
+State
+State Transitions: The Complete Catalog
+Statusline Setup
+Steps 1-4: Validation
+Steps 10-14: Execution and Cleanup
+Steps 5-6: Preparation
+Steps 7-9: Permission
+Sticky Latch Fields
+Sticky prompt tracking
+Sticky-on pattern
+Stop Hooks: Forcing Continuation
+Stop Hooks: Forcing the Model to Keep Working
+Streaming Markdown
+Structured Protocols
+Summary: Two Systems, One Design Philosophy
+System Prompt
+System Prompt Construction
+TOCTOU
+Task notifications
+Tasks
+Team Context
+Team Memory
+Terminal States (10 reasons)
+The /dream Consolidation
+The 14-Step Execution Pipeline
+The 2^N Problem
+The 370-Line System Prompt
+The Agent Reaches Beyond Localhost
+The Agent Task State
+The AgentTool Definition
+The Asymmetric Design: Persistent Reads, HTTP POST Writes
+The Base State
+The Beating Heart
+The Bitmap Pre-Filter
+The Build System
+The Byte-Identical Prefix Trick
+The Consolidation Lock
+The Cost of Complexity
+The Cost of Orchestration
+The Cost of Waiting
+The Custom DOM
+The Death Spiral Guard
+The Design Space Summarized
+The Dynamic Boundary Marker
+The Dynamic Prompt
+The Economics
+The Enable/Disable Chain
+The Event System
+The Five Most Important Lifecycle Events
+The FlushGate
+The Fork Boilerplate Tag
+The Four-Type Taxonomy
+The Frontmatter Contract
+The Full Recall Pipeline
+The Generator Chain
+The Golden Path: From Keystroke to Output
+The Idle Watchdog
+The Input Schema
+The Interrupt Behavior Contract
+The Key Parsing Pipeline
+The Keybinding System
+The Limits of a Single Thread
+The Loop Body
+The MCP Security Boundary
+The Mailbox
+The Memory Relevance Side-Query
+The Migration System
+The Multi-Provider Client Factory
+The Multiplication of Intelligence
+The Nervous System
+The Ninety-Five Percent Insight
+The Output Schema
+The Partition Algorithm
+The Performance Budget
+The Permission System
+The Problem Coordinator Mode Solves
+The Prompt Cache Architecture
+The REPL Component
+The React Fiber Container
+The Recall Path
+The Registry
+The Rendering Pipeline
+The Resolution Chain
+The Resolution Flow
+The Senior Engineer's Playbook
+The Shape of the Pipeline
+The Six Key Abstractions
+The Snapshot Security Model
+The Sonnet Side-Query
+The Startup Timeline
+The State Object
+The Stateless Problem
+The Sticky Latches in Action
+The Stop
+The Streaming Tool Executor
+The Swarm System
+The Sync-to-Async Transition
+The Task Registry
+The Task State Machine
+The Taxonomy as Filter
+The Terminal I/O Layer
+The Thinking Rules
+The Tool Interface
+The ToolResult Return Type
+The Trust Boundary
+The Two-Layer Entry Point
+The Unified Lifecycle
+The Withholding Pattern
+The Worker Agent (Coordinator Mode)
+The Write Path
+The buildFetch Wrapper
+The call() Decision Tree
+The callModel() Loop
+The queryModel Generator
+The runAgent Lifecycle
+Three Tiers
+Three Type Parameters
+Timeout Architecture
+Token Budgets
+Token Counting
+Token Refresh and Epoch Management
+Token efficiency
+Tool Concurrency Properties
+Tool Deferred Loading
+Tool Lifecycle
+Tool Resolution
+Tool Restrictions
+Tool Result Budgeting
+Tool System
+Tool Wrapping: From MCP to Claude Code
+Tool lifecycle
+ToolUseContext: The God Object
+Transitions as Pure Functions
+Trust Level
+Two Dimensions of Extension
+Two-Phase Loading
+Two-tier cache
+UI
+URL
+Upstream Proxy: Credential Injection in Containers
+UpstreamProxyChunk
+User-facing
+Verification
+Vim Mode
+Virtual Scrolling
+Volatile suffix
+What Callers Provide
+What Startup Teaches About System Design
+What Transfers, What Does Not
+What You're Looking At
+What a Fork Child Inherits
+What the Orchestration Layer Reveals
+When Fork Is NOT Used
+Where Agentic Systems Are Heading
+Why Build a Custom Renderer?
+Why MCP Matters Beyond Claude Code
+Why an Async Generator
+Worker Context
+YAML
+Yoga layout
+Zod validation
+abort controller hierarchy
+accidental complexity
+across all parallel hooks
+addTool(): Queuing During the Stream
+admission check
+adversarial probe
+anti-avoidance programming
+assembleToolPool(): Merging Built-in and MCP Tools
+assistant trajectory
+async generator
+at-target phase
+atomic paint block
+attachment-based agent list
+auto-approve
+auto-mode security classifier
+background signal promise
+backpressure
+backtick-prefixed
+batch orchestration
+before every tool call
+behavior at lifecycle points
+belt-and-suspenders approach
+bidirectional overrides
+blit optimization
+bounded concurrency
+browser-compatible event system
+bubble phase
+buildTool() and Fail-Closed Defaults
+byte-exact
+byte-identical prefix
+byte-identical prefixes
+cache boundary
+cache invalidation
+cache key
+cache namespace
+cache-aware request construction
+callback chain
+callback hooks
+capture and consolidation
+capture phase
+cell buffer
+cell-level diffing
+cell-level dirty tracking
+centralized side effects
+chain of responsibility
+child abort controllers
+circuit breaker
+circular dependency
+cold starts
+cold-path latency
+collaborative memory
+command handler
+command structure
+communication layer
+component tree reconciliation
+concurrency-safe tools
+content hash
+content-based deduplication
+content-only
+context modifier
+context modifier queuing
+context window
+context window fills up
+context-inheriting clone
+context-sensitive
+continuous events
+control flow
+converted to hooks
+cooperative scheduling pattern
+coordination overhead
+coordinator-worker hierarchies
+coordinator-worker patterns
+critical path
+cross-project transfer learning
+custom host config
+custom rendering engine
+dead code elimination
+decision tree routing
+defense in depth
+deferred loading
+deny-rule filtering
+dependency graph
+depth-first traversal
+derivability test
+deterministic output
+diminishing returns detection
+discard(): The Streaming Fallback Escape Hatch
+discrete events
+discriminated union
+distributed callback graph
+double buffering
+during a session
+dynamic imports
+dynamic schema
+enforcement in agent hooks
+enterprise-managed
+entry points
+event emitters
+event loop
+event propagation
+event-driven system
+executeTool(): The Core Execution Loop
+fail-closed defaults
+fail-safe fallback
+feature flags
+feature-flag gating
+feature-gated schema pattern
+federated token exchange
+file state cache clone
+filesystem-based communication channel
+fires at session beginning
+first-seen
+fixed-size grid
+forcing function
+foreground agent
+fork child
+frame scheduling
+frontmatter-declared
+full-damage frame
+fully qualified name
+function hooks
+garbage collection pauses
+generator loop pattern
+getAllBaseTools(): The Single Source of Truth
+getter/setter pattern
+given session
+goal-directed
+graceful degradation
+graceful degradation across environments
+guard clause
+half-open states
+headless mode
+headless query loop
+hit-testing
+hooks by setting
+hooks constrain behavior
+hooks-only
+hot-path speed
+idempotent migrations
+immutable snapshot
+import evaluation
+import graph
+in-place overlay
+inline shell commands execute
+input backfill
+input-dependent safety
+interning and indirection
+interning pools
+json configuration
+keybinding architecture
+language model
+launch path
+layered elimination of work
+layered permission model
+layout effects phase
+lazy initialization system
+lazy syntax highlighting
+lockfile race
+managed hooks
+manual GC hint
+memory extraction
+memory locality
+memory only
+message history
+microtask deferral
+mode-based defaults
+module evaluation
+module-level I/O
+module-level side effects
+module-level subprocess dispatch
+multi-agent swarm teams
+multi-turn
+mutable singleton
+mutual exclusion contract
+non-blocking
+non-interactive sessions
+null-action unbinding mechanism
+object-per-cell allocation
+one-shot agent
+only internal callbacks
+order-preserving partitioning
+parallel I/O
+partition algorithm
+patch merging
+path-aware probing
+per-child directive
+permission boundary
+permission modes
+permission resolution chain
+permission resolver
+pipe mode
+plan approval protocol
+policy-managed
+post-render deferred prefetches
+post-stream drain
+pre-flight
+preAction hook
+prefix boundary
+print mode
+priority chain
+process isolation
+process singleton
+process-scoped state
+processQueue(): The Admission Check
+progress reporting
+prompt cache exploitation mechanism
+prompt cache stability
+prompt complexity
+prompt prefix
+prompt suggestion
+prompt text
+prompt-cache breakpoint
+provider-agnostic architecture
+pure lifecycle function
+queueMicrotask deferral
+re-reading
+re-reads
+reactive UI
+reactive compact
+reactive store
+real-world
+recursive agent architecture via tasks
+recursive forking guard
+reducer pattern
+remaining events
+reservoir sampling
+resolution chain
+result budgeting
+retained-mode graphics pipeline
+rule-based matching
+s shell commands
+scheduling priorities
+schema migrations
+schema passthrough
+schema version
+scoped hooks
+screen buffer
+search highlighting
+security boundaries
+security hook snapshot
+security posture
+security-relevant
+self-describing tool interface
+sensitive capability expansion
+serial nature of tool execution
+server-sent events
+server-side prompt caching
+session started
+session-scoped
+session-stable invariants
+shallow copy
+shot prompt
+shutdown protocol
+sibling error cascade
+sidechain transcript
+single-shot prompt-response
+skill-declared
+slash commands
+slot arrays
+sort-then-concatenate approach
+source of truth
+speculative classifier start
+speculative execution
+startup pipeline
+state machine
+stdin Management
+stdin-gap detector
+stdout parsed if JSON
+step-up detection
+sticky latch pattern
+stop-verification
+streaming executor
+streaming markdown
+string-level diffing
+structural coverage
+sub-agent
+submission-order result yielding
+synchronized update markers
+telemetry-safe error classification
+terminal states
+thinking signatures
+three-state type
+timeout layering
+token caching
+tool calls
+tool discovery
+tool execution pipeline
+tool invocation
+tool name normalization
+tool output entirely
+tool pool
+tool-specific checks
+trust-sensitive operations
+two dozen lifecycle points
+two-phase
+two-stage classifier
+two-tier architecture
+type erasure
+typed arrays
+typed state machines
+uniform execution pipeline
+updater function pattern
+useful for hooks
+user intent
+user-configurable
+user-provided
+vendor-side OAuth
+version-controlled
+virtual scrolling
+warm-start timings
+withheld error
+xterm modifyOtherKeys
+zero-width joiners

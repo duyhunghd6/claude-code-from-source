@@ -14,3 +14,5 @@ assets/
 
 # Local reference material — not for distribution
 .reference/
+.vercel
+.env*.local

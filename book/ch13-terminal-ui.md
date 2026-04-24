@@ -64,7 +64,7 @@ Cầu nối reconciler dùng `react-reconciler` để tạo custom host config. 
 createContainer(rootNode, ConcurrentRoot, ...)
 ```
 
-`ConcurrentRoot` bật các tính năng concurrent của React -- Suspense cho syntax highlighting lazy-loaded, transitions cho cập nhật trạng thái không chặn trong lúc streaming. Lựa chọn còn lại, `LegacyRoot`, sẽ ép render đồng bộ và chặn event loop khi markdown re-parse nặng.
+ConcurrentRoot bật các tính năng concurrent của React -- Suspense cho syntax highlighting lazy-loaded, transitions cho cập nhật trạng thái không chặn trong lúc streaming. Lựa chọn còn lại, `LegacyRoot`, sẽ ép render đồng bộ và chặn event loop khi markdown re-parse nặng.
 
 Các phương thức host config ánh xạ thao tác React sang custom DOM:
 
